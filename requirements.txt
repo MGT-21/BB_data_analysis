@@ -6,3 +6,4 @@ scikit-learn>=1.0.0
 jupyter>=1.0.0
 ipykernel>=6.0.0
 notebook>=6.4.0
+streamlit==1.56.0
