@@ -39,9 +39,9 @@ def load_data():
         from config import SILVER_DATASET
         df = pd.read_csv(SILVER_DATASET)
     except ImportError:
-        # Fallback caso não encontre o arquivo config.py no mesmo diretório
-        st.warning("⚠️ Arquivo config.py não encontrado. Certifique-se de que o caminho do dataset está correto. Tentando ler 'silver_dataset.csv' localmente.")
-        df = pd.read_csv("silver_dataset.csv") # Substitua pelo caminho real se necessário
+        # Fallback caso não encontre o arquivo config.py
+        st.warning("⚠️ Arquivo config.py não encontrado. Tentando ler 'silver_dataset.csv' localmente.")
+        df = pd.read_csv("silver_dataset.csv")
 
     # ---- Criação das features de Fraude baseadas no notebook ----
     if "fraude_score" not in df.columns:
@@ -60,7 +60,6 @@ def load_data():
             "fraude_ocr_baixo", "fraude_compliance_review"
         ]
 
-        # Filtra apenas colunas que realmente existem no DF para evitar erros
         sinais_existentes = [s for s in sinais if s in df.columns]
         df["fraude_score"] = df[sinais_existentes].sum(axis=1)
         df["fraude_risco"] = pd.cut(
@@ -178,25 +177,22 @@ if menu == "1. Visão por Segmentos":
     plt.tight_layout()
     st.pyplot(fig2)
 
-    # Perfil Financeiro
+    # Perfil Financeiro - Barras Horizontais
     st.subheader("Perfil Financeiro por Segmento")
     fig3, axes3 = plt.subplots(1, 3, figsize=(18, 6))
     ordem_renda = resumo.sort_values("valor_medio", ascending=True)["customer_segment"]
     dados_renda = resumo.set_index("customer_segment").loc[ordem_renda]
 
-    # Renda
     cores_renda = sns.color_palette("Blues_d", len(dados_renda))
     axes3[0].barh(dados_renda.index, dados_renda["renda_media"], color=cores_renda, edgecolor="white")
     axes3[0].set_title("Renda Média Declarada")
     axes3[0].xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"R${x:,.0f}"))
 
-    # Valor Solicitado
     cores_credito = sns.color_palette("Oranges_d", len(dados_renda))
     axes3[1].barh(dados_renda.index, dados_renda["valor_medio"], color=cores_credito, edgecolor="white")
     axes3[1].set_title("Crédito Médio Solicitado")
     axes3[1].xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"R${x:,.0f}"))
 
-    # Ratio
     dados3 = resumo.copy()
     dados3["ratio"] = dados3["valor_medio"] / dados3["renda_media"]
     dados3 = dados3.sort_values("ratio", ascending=True)
@@ -209,13 +205,109 @@ if menu == "1. Visão por Segmentos":
     plt.tight_layout()
     st.pyplot(fig3)
 
+    # ==========================================
+    # PAINEL DE CONTROLE: QUARTIL, MÉTRICA E SEGMENTOS
+    # ==========================================
+    st.markdown("---")
+    st.subheader("🔍 Filtros Dinâmicos de Distribuição")
+
+    # 1. Seleção de Segmentos (Multiselect)
+    segmentos_disponiveis = sorted(df["customer_segment"].dropna().unique())
+    segmentos_selecionados = st.multiselect(
+        "Selecione os Segmentos Visíveis:",
+        options=segmentos_disponiveis,
+        default=segmentos_disponiveis
+    )
+
+    col_sel1, col_sel2 = st.columns(2)
+
+    with col_sel1:
+        opcao_q = st.selectbox(
+            "Selecione o Quartil:",
+            ["Todos", "1º Quartil (0-25%)", "2º Quartil (25-50%)", "3º Quartil (50-75%)", "4º Quartil (75-100%)"]
+        )
+
+    with col_sel2:
+        metrica_sel = st.selectbox(
+            "Selecione a Métrica:",
+            ["Renda Declarada", "Crédito Solicitado", "Relação Crédito/Renda"]
+        )
+
+    # Mapeamento e criação da coluna Ratio
+    mapa_metrica = {
+        "Renda Declarada": "income_declared",
+        "Crédito Solicitado": "credit_requested_value",
+        "Relação Crédito/Renda": "ratio"
+    }
+    col_alvo = mapa_metrica[metrica_sel]
+
+    if "ratio" not in df.columns:
+        df["ratio"] = df["credit_requested_value"] / df["income_declared"]
+        df["ratio"].replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    # ==========================================
+    # GERAÇÃO DO GRÁFICO (FIG4)
+    # ==========================================
+    fig4, ax4 = plt.subplots(figsize=(16, 7))
+
+    # Cores fixas para cada segmento para manter consistência visual ao filtrar
+    cores_map = dict(zip(segmentos_disponiveis, sns.color_palette("tab10", len(segmentos_disponiveis))))
+
+    for seg in segmentos_selecionados:
+        # Filtro de segmento e remoção de nulos
+        dados_seg = df[df["customer_segment"] == seg][col_alvo].dropna()
+
+        if not dados_seg.empty:
+            # Lógica de limites dos Quartis
+            if opcao_q == "1º Quartil (0-25%)":
+                lim_sup = dados_seg.quantile(0.25)
+                dados_filtrados = dados_seg[dados_seg <= lim_sup]
+            elif opcao_q == "2º Quartil (25-50%)":
+                lim_inf, lim_sup = dados_seg.quantile(0.25), dados_seg.quantile(0.50)
+                dados_filtrados = dados_seg[(dados_seg > lim_inf) & (dados_seg <= lim_sup)]
+            elif opcao_q == "3º Quartil (50-75%)":
+                lim_inf, lim_sup = dados_seg.quantile(0.50), dados_seg.quantile(0.75)
+                dados_filtrados = dados_seg[(dados_seg > lim_inf) & (dados_seg <= lim_sup)]
+            elif opcao_q == "4º Quartil (75-100%)":
+                lim_inf = dados_seg.quantile(0.75)
+                dados_filtrados = dados_seg[dados_seg > lim_inf]
+            else:
+                dados_filtrados = dados_seg
+
+            # Ordenação e Plotagem (.values garante que o sort receba a série numérica)
+            if not dados_filtrados.empty:
+                sorted_vals = np.sort(dados_filtrados.values)
+                ax4.plot(
+                    range(len(sorted_vals)),
+                    sorted_vals,
+                    color=cores_map[seg],
+                    label=seg,
+                    linewidth=2.5,
+                    alpha=0.8
+                )
+
+    # Formatação Final
+    ax4.set_title(f"{metrica_sel} | {opcao_q}", fontsize=16, fontweight='bold', pad=20)
+    ax4.set_ylabel("Valor")
+    ax4.set_xlabel("Nº de Registros (Ordenados)")
+    ax4.grid(axis='y', linestyle='--', alpha=0.5)
+
+    # Formatação de moeda R$
+    if col_alvo in ["income_declared", "credit_requested_value"]:
+        ax4.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"R${x:,.0f}"))
+
+    # Legenda fora do gráfico
+    ax4.legend(title="Segmentos Ativos", bbox_to_anchor=(1.02, 1), loc='upper left', frameon=True)
+
+    plt.tight_layout()
+    st.pyplot(fig4)
+
 # ==========================================
 # PÁGINA 2: PERFORMANCE DO SISTEMA
 # ==========================================
 elif menu == "2. Performance do Sistema (OCR)":
     st.title("⚙️ Performance do Sistema e Motores OCR")
 
-    # Matriz Acerto / Erro
     aprovados = df[df["final_decision"] == "APPROVE"]
     em_revisao = df[df["final_decision"] == "REVIEW"]
 
@@ -231,10 +323,8 @@ elif menu == "2. Performance do Sistema (OCR)":
     col2.metric("Total em Revisão", f"{len(em_revisao):,}")
     col3.metric("Taxa de Erro Geral", f"{erro_aprovado/total*100:.1f}%", help="Aprovações que viraram inadimplência sobre o total.")
 
-    # Gráfico de Acerto/Erro
     fig_sys, axes_sys = plt.subplots(1, 3, figsize=(16, 6))
 
-    # Approve
     val_apr = [acerto_aprovado/len(aprovados)*100, erro_aprovado/len(aprovados)*100]
     axes_sys[0].bar(["APPROVE"], [val_apr[0]], color="#4caf50", width=0.5)
     axes_sys[0].bar(["APPROVE"], [val_apr[1]], bottom=[val_apr[0]], color="#f44336", width=0.5)
@@ -242,14 +332,12 @@ elif menu == "2. Performance do Sistema (OCR)":
     axes_sys[0].set_ylabel("% dos casos")
     axes_sys[0].legend(["Acertou (pagou)", "Errou (inadimpliu)"], loc="upper right", fontsize=9)
 
-    # Review
     val_rev = [acerto_revisao/len(em_revisao)*100, falso_alarme/len(em_revisao)*100]
     axes_sys[1].bar(["REVIEW"], [val_rev[0]], color="#4caf50", width=0.5)
     axes_sys[1].bar(["REVIEW"], [val_rev[1]], bottom=[val_rev[0]], color="#ff9800", width=0.5)
     axes_sys[1].set_title(f"REVIEW ({len(em_revisao):,})")
     axes_sys[1].legend(["Acertou (risco real)", "Falso alarme (pagou)"], loc="upper right", fontsize=9)
 
-    # Geral Pie
     categorias = ["Aprovado/Pagou", "Aprovado/Inadimpliu", "Revisão/Risco Real", "Revisão/Falso Alarme"]
     valores_pizza = [acerto_aprovado, erro_aprovado, acerto_revisao, falso_alarme]
     cores_pizza   = ["#4caf50", "#f44336", "#81c784", "#ff9800"]
@@ -261,12 +349,10 @@ elif menu == "2. Performance do Sistema (OCR)":
 
     st.markdown("---")
 
-    # Análise de OCR
     st.subheader("Performance dos Motores OCR")
 
     c1, c2 = st.columns(2)
     with c1:
-        # Erros e Confiança OCR
         erros_motor = (
             df.groupby("ocr_engine", observed=True)
             .agg(erros_medio=("ocr_error_count", "mean"), confianca_media=("ocr_confidence", "mean"))
@@ -287,7 +373,6 @@ elif menu == "2. Performance do Sistema (OCR)":
         st.pyplot(fig_ocr)
 
     with c2:
-        # Heatmap Confiança
         if "doc_type" in df.columns:
             pivot_conf = (df.groupby(["ocr_engine", "doc_type"], observed=True)["ocr_confidence"].mean().unstack() * 100)
             fig_hm, ax_hm = plt.subplots(figsize=(8, 4))
@@ -309,7 +394,6 @@ elif menu == "3. Inadimplência":
 
     st.markdown("---")
 
-    # Visão Geral (Pie e Região)
     fig_def, axes_def = plt.subplots(1, 2, figsize=(13, 5))
 
     contagem = df["default_12m"].value_counts().sort_index()
@@ -328,7 +412,6 @@ elif menu == "3. Inadimplência":
     plt.tight_layout()
     st.pyplot(fig_def)
 
-    # LTV
     st.subheader("Inadimplência por Faixa de LTV")
     df["ltv_faixa"] = pd.cut(df["ltv"], bins=[0, 0.5, 1.0, 1.5, 2.0, 100], labels=["0–50%", "50–100%", "100–150%", "150–200%", ">200%"])
     ltv_default = df.groupby("ltv_faixa", observed=True).agg(default_rate=("default_12m", "mean"), total=("default_12m", "count")).reset_index()
@@ -341,7 +424,6 @@ elif menu == "3. Inadimplência":
     ax_ltv.legend()
     st.pyplot(fig_ltv)
 
-    # Heatmap Segmento x Setor
     if "industry_sector" in df.columns:
         st.subheader("Inadimplência: Segmento x Setor")
         pivot_setor = (df.groupby(["customer_segment", "industry_sector"], observed=True)["default_12m"].mean().unstack() * 100)
@@ -355,7 +437,6 @@ elif menu == "3. Inadimplência":
 elif menu == "4. Risco de Fraude":
     st.title("🚨 Análise e Scoring de Risco de Fraude")
 
-    # Cores de Risco
     COR_BAIXO, COR_MEDIO, COR_ALTO = "#4caf50", "#ff9800", "#f44336"
     CORES_RISCO = [COR_BAIXO, COR_MEDIO, COR_ALTO]
 
@@ -363,7 +444,6 @@ elif menu == "4. Risco de Fraude":
     **Metodologia do Score:** O sistema calcula o risco somando violações operacionais, anomalias de OCR, documentação em idiomas estrangeiros sem dados sensíveis associados e outros indicadores suspeitos (0 a 8 pontos).
     """)
 
-    # Distribuição
     contagem = df["fraude_risco"].value_counts().reindex(["BAIXO", "MEDIO", "ALTO"])
 
     col1, col2, col3 = st.columns(3)
@@ -376,18 +456,16 @@ elif menu == "4. Risco de Fraude":
     col_chart1, col_chart2 = st.columns(2)
 
     with col_chart1:
-        # Frequência dos sinais
         sinais = ["fraude_idioma_estrangeiro", "fraude_sem_garantia", "fraude_match_baixo", "fraude_pii_idioma", "fraude_muitas_violacoes", "fraude_duplicado", "fraude_ocr_baixo", "fraude_compliance_review"]
         sinais_validos = [s for s in sinais if s in df.columns]
 
         freq = df[sinais_validos].mean().sort_values(ascending=True) * 100
         fig_sinais, ax_sin = plt.subplots(figsize=(8, 5))
-        axes = ax_sin.barh(freq.index, freq.values, color="#e57373")
+        ax_sin.barh(freq.index, freq.values, color="#e57373")
         ax_sin.set_title("Frequência de Sinais de Alerta (%)")
         st.pyplot(fig_sinais)
 
     with col_chart2:
-        # Score médio por segmento
         score_segmento = df.groupby("customer_segment", observed=True)["fraude_score"].mean().sort_values(ascending=False)
         fig_seg, ax_seg = plt.subplots(figsize=(8, 5))
         cores_seg = [COR_ALTO if v >= 2.5 else COR_MEDIO if v >= 2.0 else COR_BAIXO for v in score_segmento.values]
@@ -397,7 +475,6 @@ elif menu == "4. Risco de Fraude":
         ax_seg.axhline(y=score_segmento.mean(), color="gray", linestyle="--")
         st.pyplot(fig_seg)
 
-    # Tabela de Alto Risco para investigação
     st.subheader("📋 Amostra de Casos de Alto Risco para Investigação")
     casos_alto_risco = df[df["fraude_risco"] == "ALTO"].sort_values("fraude_score", ascending=False).head(50)
 
