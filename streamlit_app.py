@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import seaborn as sns
 import os
+from scipy.stats import ks_2samp
 
 # ==========================================
 # Configurações Iniciais do Streamlit
@@ -219,7 +220,7 @@ if menu == "1. Visão por Segmentos":
         default=segmentos_disponiveis
     )
 
-    col_sel1, col_sel2 = st.columns(2)
+    col_sel1, col_sel2, col_sel3 = st.columns(3)
 
     with col_sel1:
         opcao_q = st.selectbox(
@@ -232,6 +233,10 @@ if menu == "1. Visão por Segmentos":
             "Selecione a Métrica:",
             ["Renda Declarada", "Crédito Solicitado", "Relação Crédito/Renda"]
         )
+
+    with col_sel3:
+        st.markdown("<br>", unsafe_allow_html=True) # Alinhamento vertical com as caixas de seleção
+        remover_outliers = st.checkbox("Remover Outliers (IQR)", value=False)
 
     # Mapeamento e criação da coluna Ratio
     mapa_metrica = {
@@ -256,6 +261,13 @@ if menu == "1. Visão por Segmentos":
     for seg in segmentos_selecionados:
         # Filtro de segmento e remoção de nulos
         dados_seg = df[df["customer_segment"] == seg][col_alvo].dropna()
+
+        # Remoção de Outliers via Método IQR, se selecionado
+        if remover_outliers and not dados_seg.empty:
+            q1 = dados_seg.quantile(0.25)
+            q3 = dados_seg.quantile(0.75)
+            iqr = q3 - q1
+            dados_seg = dados_seg[(dados_seg >= (q1 - 1.5 * iqr)) & (dados_seg <= (q3 + 1.5 * iqr))]
 
         if not dados_seg.empty:
             # Lógica de limites dos Quartis
@@ -301,6 +313,131 @@ if menu == "1. Visão por Segmentos":
 
     plt.tight_layout()
     st.pyplot(fig4)
+
+    st.markdown("---")
+    st.markdown("""
+    Nesta visão, testamos se diferentes grupos possuem perfis financeiros originados da mesma distribuição subjacente.
+    **Você pode comparar segmentos individuais ou grupos consolidados (AGRO e PJ).**
+
+    * **Scatterplot:** Mostra a dispersão bidimensional (Renda vs. Crédito).
+    * **Teste KS (Kolmogorov-Smirnov):** Aplicado à **Renda Declarada** e ao **Crédito Solicitado**. Se o **p-valor < 0,05**, rejeitamos a hipótese nula, indicando que as distribuições dos grupos são estatisticamente diferentes.
+    """)
+
+    # Função auxiliar otimizada para comparar 2 grupos com coluna dinâmica
+    def calcular_ks_direto(df_teste, col_grupo, g1, g2, col_valor):
+        s1 = df_teste[df_teste[col_grupo] == g1][col_valor].dropna()
+        s2 = df_teste[df_teste[col_grupo] == g2][col_valor].dropna()
+
+        if len(s1) == 0 or len(s2) == 0:
+            return pd.DataFrame()
+
+        stat, p_val = ks_2samp(s1, s2)
+        mesma_dist = "❌ Diferentes" if p_val < 0.05 else "✅ Semelhantes"
+
+        return pd.DataFrame([{
+            "Comparação": f"{g1} vs {g2}",
+            "Estatística KS": round(stat, 4),
+            "p-valor": f"{p_val:.4f}",
+            "Conclusão (α=0.05)": mesma_dist
+        }])
+
+    # Obter lista de segmentos individuais em ordem alfabética
+    segmentos_individuais = sorted(df["customer_segment"].dropna().unique().tolist())
+
+    # Adiciona os macro-grupos no topo das opções de seleção
+    opcoes_selecao = ["AGRO (Todos)", "PJ (Todos)"] + segmentos_individuais
+
+    col_sel1, col_sel2 = st.columns(2)
+    with col_sel1:
+        seg1 = st.selectbox("🔵 Selecione o Grupo A:", opcoes_selecao, index=0)
+    with col_sel2:
+        seg2 = st.selectbox("🟠 Selecione o Grupo B:", opcoes_selecao, index=1)
+
+    # Validação para evitar comparar o mesmo grupo
+    if seg1 == seg2:
+        st.warning("⚠️ Por favor, selecione dois grupos diferentes para realizar a comparação.")
+    else:
+        # -------------------------------------------------------------
+        # Lógica de Agrupamento Dinâmico
+        # -------------------------------------------------------------
+        def preparar_dados(df_base, escolha):
+            if escolha == "AGRO (Todos)":
+                filtro = df_base["customer_segment"].isin(["AGRO_PEQUENO", "AGRO_MEDIO", "AGRO_GRANDE"])
+            elif escolha == "PJ (Todos)":
+                filtro = df_base["customer_segment"].isin(["PJ_EPP", "PJ_ME", "PJ_GRANDE"])
+            else:
+                filtro = df_base["customer_segment"] == escolha
+
+            # Cria um dataframe isolado e renomeia o segmento para o nome escolhido
+            df_temp = df_base[filtro].copy()
+            df_temp["grupo_comparacao"] = escolha
+            return df_temp
+
+        # Prepara os dados de A e B
+        df_g1 = preparar_dados(df, seg1)
+        df_g2 = preparar_dados(df, seg2)
+
+        # Junta e EMBARALHA os dados para evitar que um grupo esconda o outro no gráfico
+        df_comp = pd.concat([df_g1, df_g2]).sample(frac=1, random_state=42).reset_index(drop=True)
+
+        col_plot, col_test = st.columns([1.5, 1])
+
+        with col_plot:
+            st.subheader("Dispersão Renda x Crédito")
+            fig_comp, ax_comp = plt.subplots(figsize=(8, 5))
+
+            # Trava as cores para manter a consistência visual
+            paleta = {seg1: "#1f77b4", seg2: "#ff7f0e"}
+
+            sns.scatterplot(
+                data=df_comp,
+                x="income_declared",
+                y="credit_requested_value",
+                hue="grupo_comparacao",
+                alpha=0.5,           # Levemente mais transparente
+                s=35,                # Pontos um pouco menores para reduzir poluição
+                linewidth=0,         # Remove a borda branca dos pontos
+                palette=paleta,
+                ax=ax_comp
+            )
+            ax_comp.set_xlabel("Renda Declarada (R$)")
+            ax_comp.set_ylabel("Crédito Solicitado (R$)")
+            ax_comp.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+            ax_comp.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+            st.pyplot(fig_comp)
+
+        with col_test:
+            st.subheader("Resultados do Teste KS")
+
+            # --- 1. Teste para Renda Declarada ---
+            st.markdown("##### 🏢 1. Renda Declarada")
+            res_renda = calcular_ks_direto(df_comp, "grupo_comparacao", seg1, seg2, "income_declared")
+
+            if not res_renda.empty:
+                st.dataframe(res_renda, hide_index=True, use_container_width=True)
+                p_val_renda = float(res_renda["p-valor"].iloc[0])
+                if p_val_renda < 0.05:
+                    st.error(f"**Análise:** As distribuições de **Renda Declarada** entre {seg1} e {seg2} são estatisticamente **diferentes**.")
+                else:
+                    st.success(f"**Análise:** Não há evidências suficientes para dizer que a **Renda** desses grupos é diferente.")
+            else:
+                st.warning("Dados insuficientes.")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # --- 2. Teste para Crédito Solicitado ---
+            st.markdown("##### 💰 2. Crédito Solicitado")
+            res_credito = calcular_ks_direto(df_comp, "grupo_comparacao", seg1, seg2, "credit_requested_value")
+
+            if not res_credito.empty:
+                st.dataframe(res_credito, hide_index=True, use_container_width=True)
+                p_val_credito = float(res_credito["p-valor"].iloc[0])
+                if p_val_credito < 0.05:
+                    st.error(f"**Análise:** As distribuições de **Crédito Solicitado** entre {seg1} e {seg2} são estatisticamente **diferentes**.")
+                else:
+                    st.success(f"**Análise:** Não há evidências suficientes para dizer que o **Crédito** desses grupos é diferente.")
+            else:
+                st.warning("Dados insuficientes.")
 
 # ==========================================
 # PÁGINA 2: PERFORMANCE DO SISTEMA
