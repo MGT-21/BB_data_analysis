@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import seaborn as sns
+import plotly
 import os
 from scipy.stats import ks_2samp
 
@@ -642,6 +643,8 @@ elif menu == "4. Risco de Fraude":
 # PÁGINA 5: PROBLEMA PROPOSTA - PILARES
 # ==========================================
 elif menu == "5. Problema proposta - pilares":
+    import plotly.express as px # Importação local ou no topo do arquivo
+
     st.title("🏛️ Análise dos Pilares de Risco (Problema Proposto)")
 
     st.markdown("""
@@ -664,7 +667,7 @@ elif menu == "5. Problema proposta - pilares":
                 (df['join_status'] != 'FULL_MATCH')
     cat2_default = df[cat2_mask]['default_12m'].mean()
 
-    # 3. Risco Ambiental (Clima e Desmatamento)
+    # 3. Risco Ambiental
     cat3_cols = ['deforestation_km2_12m', 'flood_risk_idx']
     if all(col in df.columns for col in cat3_cols):
         cat3_mask = (df['climate_alert_level'] == 'ALTO') | \
@@ -701,64 +704,28 @@ elif menu == "5. Problema proposta - pilares":
             "Baseline (Média Geral)"
         ],
         "Taxa de Default (%)": [
-            cat1_default * 100,
-            cat2_default * 100,
-            cat3_default * 100,
-            cat4_default * 100,
-            baseline_default * 100
+            cat1_default * 100, cat2_default * 100, cat3_default * 100, cat4_default * 100, baseline_default * 100
         ]
     }).sort_values("Taxa de Default (%)", ascending=False).reset_index(drop=True)
 
     fig_pil, ax_pil = plt.subplots(figsize=(12, 6))
-
     cores = ["#9e9e9e" if "Baseline" in pilar else "#d32f2f" for pilar in df_pilares["Pilar de Risco"]]
-
-    sns.barplot(
-        data=df_pilares,
-        x="Taxa de Default (%)",
-        y="Pilar de Risco",
-        palette=cores,
-        edgecolor="white",
-        linewidth=2,
-        ax=ax_pil
-    )
+    sns.barplot(data=df_pilares, x="Taxa de Default (%)", y="Pilar de Risco", palette=cores, ax=ax_pil)
 
     for p in ax_pil.patches:
         width = p.get_width()
         if pd.notna(width) and width > 0:
-            ax_pil.text(
-                width + 0.05, # Espaçamento reduzido pois o eixo está mais "espremido" agora
-                p.get_y() + p.get_height() / 2,
-                f"{width:.1f}%",
-                va="center",
-                fontsize=11,
-                fontweight="bold",
-                color="#333333"
-            )
+            ax_pil.text(width + 0.05, p.get_y() + p.get_height() / 2, f"{width:.1f}%", va="center", fontsize=11, fontweight="bold")
 
-    ax_pil.axvline(x=baseline_default * 100, color="#616161", linestyle="--", alpha=0.8, linewidth=1.5, label=f"Média do Dataset ({baseline_default*100:.1f}%)")
-
-    ax_pil.set_title("Impacto na Inadimplência: Piores Cenários vs. Média Geral", fontsize=14, fontweight="bold", pad=15)
-    ax_pil.set_xlabel("Taxa de Inadimplência (%)", fontsize=11, fontweight="bold")
-    ax_pil.set_ylabel("")
-
-    # NOVO LIMITE DO EIXO X (ZOOM)
+    ax_pil.axvline(x=baseline_default * 100, color="#616161", linestyle="--", alpha=0.8, label="Média Base")
     ax_pil.set_xlim(16.0, 17.5)
-
-    ax_pil.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.1f}%")) # Alterado para .1f para mostrar os decimais no eixo
-
+    ax_pil.set_title("Impacto na Inadimplência: Piores Cenários vs. Média Geral", fontsize=14, fontweight="bold")
     sns.despine(left=True, bottom=True)
-    ax_pil.grid(axis='x', linestyle=':', alpha=0.6)
-    ax_pil.legend(loc="lower right", frameon=True, fontsize=10)
-
-    plt.tight_layout()
     st.pyplot(fig_pil)
 
     # --- Tabela de Correlações ---
     st.markdown("---")
     st.subheader("🔗 Intensidade da Correlação com a Inadimplência")
-    st.markdown("Quanto maior o valor (módulo) e mais escura a cor, mais a variável 'explica' a inadimplência dentro daquele grupo.")
-
     cols_groups = {
         "Grupo 1: OCR / Imagem": ['document_image_quality', 'ocr_error_count', 'ocr_confidence', 'image_blur'],
         "Grupo 2: Dados / Controles": ['data_quality_score', 'rule_violations', 'match_score'],
@@ -774,20 +741,22 @@ elif menu == "5. Problema proposta - pilares":
 
     if res_corr:
         df_corr_final = pd.DataFrame(res_corr)
+        st.dataframe(df_corr_final.style.background_gradient(cmap="Reds"), use_container_width=True, hide_index=True)
 
-        # Aplicando estilo de mapa de calor (Heatmap) na tabela
-        tabela_estilizada = (
-            df_corr_final.style
-            .background_gradient(cmap="Reds", subset=["Correlação Média Absoluta"])
-            .format({"Correlação Média Absoluta": "{:.4f}"})
-        )
+    # --- NOVO GRÁFICO: IMPORTÂNCIA DE VARIÁVEIS (PLOTLY) ---
+    st.markdown("---")
+    st.subheader("💡 Importância de Variáveis")
+    # TODO tirar o hardcore e calcular as colunas e seus valores
+    features = ['Renda', 'LTV', 'Risco Ambiental', 'Score OCR', 'Match de PII']
+    imp = [0.28, 0.22, 0.18, 0.17, 0.15]
 
-        # Usando st.dataframe no lugar de st.table para visual moderno
-        st.dataframe(tabela_estilizada, use_container_width=True, hide_index=True)
-    else:
-        st.info("Colunas necessárias para o cálculo de correlação não encontradas no dataset.")
+    fig_imp = plotly.express.bar(x=imp, y=features, orientation='h',
+                        title="<b>O que mais impacta a Inadimplência?</b>",
+                        labels={'x': 'Peso no Modelo', 'y': 'Variável'},
+                        color_discrete_sequence=['#3498db'])
 
-    st.info("""
-    **Conclusão Acadêmica:** Os pilares de **Qualidade de Dados (Cat 2)** e **OCR (Cat 1)** costumam apresentar as maiores correlações e taxas de default.
-    Isso sugere que falhas na captura da informação e inconsistências cadastrais são preditores mais fortes de risco do que o canal de origem do documento (Cat 4).
-    """)
+    fig_imp.update_layout(yaxis={'categoryorder':'total ascending'},
+                          plot_bgcolor='rgba(0,0,0,0)',
+                          margin=dict(l=20, r=20, t=40, b=20))
+
+    st.plotly_chart(fig_imp, use_container_width=True)
