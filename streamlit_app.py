@@ -90,7 +90,8 @@ menu = st.sidebar.radio(
         "1. Visão por Segmentos",
         "2. Performance do Sistema (OCR)",
         "3. Inadimplência",
-        "4. Risco de Fraude"
+        "4. Risco de Fraude",
+        "5. Problema proposta - pilares"
     ]
 )
 
@@ -636,3 +637,157 @@ elif menu == "4. Risco de Fraude":
     colunas_validas = [c for c in colunas_exibir if c in casos_alto_risco.columns]
 
     st.dataframe(casos_alto_risco[colunas_validas], use_container_width=True)
+
+# ==========================================
+# PÁGINA 5: PROBLEMA PROPOSTA - PILARES
+# ==========================================
+elif menu == "5. Problema proposta - pilares":
+    st.title("🏛️ Análise dos Pilares de Risco (Problema Proposto)")
+
+    st.markdown("""
+    Esta análise isola os **piores cenários** de cada pilar operacional e ambiental para medir o impacto direto na taxa de inadimplência.
+    O objetivo é identificar onde as falhas de processo ou riscos externos geram os maiores desvios em relação à média.
+    """)
+
+    # --- Cálculos Base ---
+    baseline_default = df['default_12m'].mean()
+
+    # 1. OCR e Qualidade de Imagem
+    cat1_mask = (df['document_image_quality'] <= df['document_image_quality'].quantile(0.25)) | \
+                (df['ocr_error_count'] >= df['ocr_error_count'].quantile(0.75)) | \
+                (df['ocr_confidence'] <= df['ocr_confidence'].quantile(0.25))
+    cat1_default = df[cat1_mask]['default_12m'].mean()
+
+    # 2. Divergência e Qualidade de Dados
+    cat2_mask = (df['data_quality_score'] <= df['data_quality_score'].quantile(0.25)) | \
+                (df['rule_violations'] >= df['rule_violations'].quantile(0.75)) | \
+                (df['join_status'] != 'FULL_MATCH')
+    cat2_default = df[cat2_mask]['default_12m'].mean()
+
+    # 3. Risco Ambiental (Clima e Desmatamento)
+    cat3_cols = ['deforestation_km2_12m', 'flood_risk_idx']
+    if all(col in df.columns for col in cat3_cols):
+        cat3_mask = (df['climate_alert_level'] == 'ALTO') | \
+                    (df['deforestation_km2_12m'] >= df['deforestation_km2_12m'].quantile(0.75)) | \
+                    (df['flood_risk_idx'] >= df['flood_risk_idx'].quantile(0.75))
+        cat3_default = df[cat3_mask]['default_12m'].mean()
+    else:
+        cat3_default = 0
+
+    # 4. Formatos Não Padronizados
+    cat4_mask = (df['source_system'].isin(['MOBILE_PHOTO', 'EMAIL_ATTACH'])) | \
+                (df['compliance_status'] == 'REVIEW')
+    cat4_default = df[cat4_mask]['default_12m'].mean()
+
+    # --- Métricas de Destaque ---
+    st.markdown("---")
+    col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+
+    col_m1.metric("Baseline Geral", f"{baseline_default*100:.2f}%")
+    col_m2.metric("Pilar OCR", f"{cat1_default*100:.2f}%", f"{(cat1_default-baseline_default)*100:.2f}%", delta_color="inverse")
+    col_m3.metric("Pilar Dados", f"{cat2_default*100:.2f}%", f"{(cat2_default-baseline_default)*100:.2f}%", delta_color="inverse")
+    col_m4.metric("Pilar Ambiental", f"{cat3_default*100:.2f}%", f"{(cat3_default-baseline_default)*100:.2f}%", delta_color="inverse")
+    col_m5.metric("Pilar Formatos", f"{cat4_default*100:.2f}%", f"{(cat4_default-baseline_default)*100:.2f}%", delta_color="inverse")
+
+    # --- Gráfico Comparativo de Pilares (Executivo) ---
+    st.subheader("📊 Comparativo de Inadimplência por Pilar")
+
+    df_pilares = pd.DataFrame({
+        "Pilar de Risco": [
+            "1. OCR / Qualidade de Imagem",
+            "2. Divergência / Qualidade de Dados",
+            "3. Risco Ambiental / Climático",
+            "4. Formatos Não Padronizados",
+            "Baseline (Média Geral)"
+        ],
+        "Taxa de Default (%)": [
+            cat1_default * 100,
+            cat2_default * 100,
+            cat3_default * 100,
+            cat4_default * 100,
+            baseline_default * 100
+        ]
+    }).sort_values("Taxa de Default (%)", ascending=False).reset_index(drop=True)
+
+    fig_pil, ax_pil = plt.subplots(figsize=(12, 6))
+
+    cores = ["#9e9e9e" if "Baseline" in pilar else "#d32f2f" for pilar in df_pilares["Pilar de Risco"]]
+
+    sns.barplot(
+        data=df_pilares,
+        x="Taxa de Default (%)",
+        y="Pilar de Risco",
+        palette=cores,
+        edgecolor="white",
+        linewidth=2,
+        ax=ax_pil
+    )
+
+    for p in ax_pil.patches:
+        width = p.get_width()
+        if pd.notna(width) and width > 0:
+            ax_pil.text(
+                width + 0.05, # Espaçamento reduzido pois o eixo está mais "espremido" agora
+                p.get_y() + p.get_height() / 2,
+                f"{width:.1f}%",
+                va="center",
+                fontsize=11,
+                fontweight="bold",
+                color="#333333"
+            )
+
+    ax_pil.axvline(x=baseline_default * 100, color="#616161", linestyle="--", alpha=0.8, linewidth=1.5, label=f"Média do Dataset ({baseline_default*100:.1f}%)")
+
+    ax_pil.set_title("Impacto na Inadimplência: Piores Cenários vs. Média Geral", fontsize=14, fontweight="bold", pad=15)
+    ax_pil.set_xlabel("Taxa de Inadimplência (%)", fontsize=11, fontweight="bold")
+    ax_pil.set_ylabel("")
+
+    # NOVO LIMITE DO EIXO X (ZOOM)
+    ax_pil.set_xlim(16.0, 17.5)
+
+    ax_pil.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.1f}%")) # Alterado para .1f para mostrar os decimais no eixo
+
+    sns.despine(left=True, bottom=True)
+    ax_pil.grid(axis='x', linestyle=':', alpha=0.6)
+    ax_pil.legend(loc="lower right", frameon=True, fontsize=10)
+
+    plt.tight_layout()
+    st.pyplot(fig_pil)
+
+    # --- Tabela de Correlações ---
+    st.markdown("---")
+    st.subheader("🔗 Intensidade da Correlação com a Inadimplência")
+    st.markdown("Quanto maior o valor (módulo) e mais escura a cor, mais a variável 'explica' a inadimplência dentro daquele grupo.")
+
+    cols_groups = {
+        "Grupo 1: OCR / Imagem": ['document_image_quality', 'ocr_error_count', 'ocr_confidence', 'image_blur'],
+        "Grupo 2: Dados / Controles": ['data_quality_score', 'rule_violations', 'match_score'],
+        "Grupo 3: Ambiental / Externo": ['flood_risk_idx', 'deforestation_km2_12m', 'fire_hotspots_30d', 'drought_spi']
+    }
+
+    res_corr = []
+    for grupo, colunas in cols_groups.items():
+        cols_existentes = [c for c in colunas if c in df.columns]
+        if cols_existentes:
+            corr_media = df[cols_existentes].corrwith(df['default_12m']).abs().mean()
+            res_corr.append({"Grupo de Variáveis": grupo, "Correlação Média Absoluta": corr_media})
+
+    if res_corr:
+        df_corr_final = pd.DataFrame(res_corr)
+
+        # Aplicando estilo de mapa de calor (Heatmap) na tabela
+        tabela_estilizada = (
+            df_corr_final.style
+            .background_gradient(cmap="Reds", subset=["Correlação Média Absoluta"])
+            .format({"Correlação Média Absoluta": "{:.4f}"})
+        )
+
+        # Usando st.dataframe no lugar de st.table para visual moderno
+        st.dataframe(tabela_estilizada, use_container_width=True, hide_index=True)
+    else:
+        st.info("Colunas necessárias para o cálculo de correlação não encontradas no dataset.")
+
+    st.info("""
+    **Conclusão Acadêmica:** Os pilares de **Qualidade de Dados (Cat 2)** e **OCR (Cat 1)** costumam apresentar as maiores correlações e taxas de default.
+    Isso sugere que falhas na captura da informação e inconsistências cadastrais são preditores mais fortes de risco do que o canal de origem do documento (Cat 4).
+    """)
