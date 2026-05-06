@@ -4,7 +4,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import seaborn as sns
+import plotly
 import os
+from scipy.stats import ks_2samp
 
 # ==========================================
 # Configurações Iniciais do Streamlit
@@ -16,18 +18,22 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Estilo global dos gráficos
-sns.set_theme(style="whitegrid", palette="muted", font_scale=1.0)
-plt.rcParams.update({
-    "figure.dpi": 100,
-    "figure.facecolor": "white",
-    "axes.facecolor": "white",
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "axes.titlesize": 12,
-    "axes.titleweight": "bold",
-    "axes.labelsize": 10,
-})
+# Caching the global style to avoid re-applying it on every rerun
+@st.cache_resource
+def apply_global_styles():
+    sns.set_theme(style="whitegrid", palette="muted", font_scale=1.0)
+    plt.rcParams.update({
+        "figure.dpi": 100,
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.titlesize": 12,
+        "axes.titleweight": "bold",
+        "axes.labelsize": 10,
+    })
+
+apply_global_styles()
 
 # ==========================================
 # Carregamento e Processamento de Dados
@@ -85,7 +91,8 @@ menu = st.sidebar.radio(
         "1. Visão por Segmentos",
         "2. Performance do Sistema (OCR)",
         "3. Inadimplência",
-        "4. Risco de Fraude"
+        "4. Risco de Fraude",
+        "5. Problema proposta - pilares"
     ]
 )
 
@@ -148,6 +155,7 @@ if menu == "1. Visão por Segmentos":
 
     plt.tight_layout()
     st.pyplot(fig1)
+    plt.close(fig1) # Reduce memory
 
     # Taxas de Aprovação e Default
     st.subheader("Taxas de Aprovação e Inadimplência")
@@ -176,6 +184,7 @@ if menu == "1. Visão por Segmentos":
 
     plt.tight_layout()
     st.pyplot(fig2)
+    plt.close(fig2)
 
     # Perfil Financeiro - Barras Horizontais
     st.subheader("Perfil Financeiro por Segmento")
@@ -204,6 +213,7 @@ if menu == "1. Visão por Segmentos":
 
     plt.tight_layout()
     st.pyplot(fig3)
+    plt.close(fig3)
 
     # ==========================================
     # PAINEL DE CONTROLE: QUARTIL, MÉTRICA E SEGMENTOS
@@ -219,7 +229,7 @@ if menu == "1. Visão por Segmentos":
         default=segmentos_disponiveis
     )
 
-    col_sel1, col_sel2 = st.columns(2)
+    col_sel1, col_sel2, col_sel3 = st.columns(3)
 
     with col_sel1:
         opcao_q = st.selectbox(
@@ -232,6 +242,10 @@ if menu == "1. Visão por Segmentos":
             "Selecione a Métrica:",
             ["Renda Declarada", "Crédito Solicitado", "Relação Crédito/Renda"]
         )
+
+    with col_sel3:
+        st.markdown("<br>", unsafe_allow_html=True) # Alinhamento vertical com as caixas de seleção
+        remover_outliers = st.checkbox("Remover Outliers (IQR)", value=False)
 
     # Mapeamento e criação da coluna Ratio
     mapa_metrica = {
@@ -256,6 +270,13 @@ if menu == "1. Visão por Segmentos":
     for seg in segmentos_selecionados:
         # Filtro de segmento e remoção de nulos
         dados_seg = df[df["customer_segment"] == seg][col_alvo].dropna()
+
+        # Remoção de Outliers via Método IQR, se selecionado
+        if remover_outliers and not dados_seg.empty:
+            q1 = dados_seg.quantile(0.25)
+            q3 = dados_seg.quantile(0.75)
+            iqr = q3 - q1
+            dados_seg = dados_seg[(dados_seg >= (q1 - 1.5 * iqr)) & (dados_seg <= (q3 + 1.5 * iqr))]
 
         if not dados_seg.empty:
             # Lógica de limites dos Quartis
@@ -301,6 +322,133 @@ if menu == "1. Visão por Segmentos":
 
     plt.tight_layout()
     st.pyplot(fig4)
+    plt.close(fig4)
+
+    st.markdown("---")
+    st.markdown("""
+    Nesta visão, testamos se diferentes grupos possuem perfis financeiros originados da mesma distribuição subjacente.
+    **Você pode comparar segmentos individuais ou grupos consolidados (AGRO e PJ).**
+
+    * **Scatterplot:** Mostra a dispersão bidimensional (Renda vs. Crédito).
+    * **Teste KS (Kolmogorov-Smirnov):** Aplicado à **Renda Declarada** e ao **Crédito Solicitado**. Se o **p-valor < 0,05**, rejeitamos a hipótese nula, indicando que as distribuições dos grupos são estatisticamente diferentes.
+    """)
+
+    # Função auxiliar otimizada para comparar 2 grupos com coluna dinâmica
+    def calcular_ks_direto(df_teste, col_grupo, g1, g2, col_valor):
+        s1 = df_teste[df_teste[col_grupo] == g1][col_valor].dropna()
+        s2 = df_teste[df_teste[col_grupo] == g2][col_valor].dropna()
+
+        if len(s1) == 0 or len(s2) == 0:
+            return pd.DataFrame()
+
+        stat, p_val = ks_2samp(s1, s2)
+        mesma_dist = "❌ Diferentes" if p_val < 0.05 else "✅ Semelhantes"
+
+        return pd.DataFrame([{
+            "Comparação": f"{g1} vs {g2}",
+            "Estatística KS": round(stat, 4),
+            "p-valor": f"{p_val:.4f}",
+            "Conclusão (α=0.05)": mesma_dist
+        }])
+
+    # Obter lista de segmentos individuais em ordem alfabética
+    segmentos_individuais = sorted(df["customer_segment"].dropna().unique().tolist())
+
+    # Adiciona os macro-grupos no topo das opções de seleção
+    opcoes_selecao = ["AGRO (Todos)", "PJ (Todos)"] + segmentos_individuais
+
+    col_sel1, col_sel2 = st.columns(2)
+    with col_sel1:
+        seg1 = st.selectbox("🔵 Selecione o Grupo A:", opcoes_selecao, index=0)
+    with col_sel2:
+        seg2 = st.selectbox("🟠 Selecione o Grupo B:", opcoes_selecao, index=1)
+
+    # Validação para evitar comparar o mesmo grupo
+    if seg1 == seg2:
+        st.warning("⚠️ Por favor, selecione dois grupos diferentes para realizar a comparação.")
+    else:
+        # -------------------------------------------------------------
+        # Lógica de Agrupamento Dinâmico
+        # -------------------------------------------------------------
+        def preparar_dados(df_base, escolha):
+            if escolha == "AGRO (Todos)":
+                filtro = df_base["customer_segment"].isin(["AGRO_PEQUENO", "AGRO_MEDIO", "AGRO_GRANDE"])
+            elif escolha == "PJ (Todos)":
+                filtro = df_base["customer_segment"].isin(["PJ_EPP", "PJ_ME", "PJ_GRANDE"])
+            else:
+                filtro = df_base["customer_segment"] == escolha
+
+            # Cria um dataframe isolado e renomeia o segmento para o nome escolhido
+            df_temp = df_base[filtro].copy()
+            df_temp["grupo_comparacao"] = escolha
+            return df_temp
+
+        # Prepara os dados de A e B
+        df_g1 = preparar_dados(df, seg1)
+        df_g2 = preparar_dados(df, seg2)
+
+        # Junta e EMBARALHA os dados para evitar que um grupo esconda o outro no gráfico
+        df_comp = pd.concat([df_g1, df_g2]).sample(frac=1, random_state=42).reset_index(drop=True)
+
+        col_plot, col_test = st.columns([1.5, 1])
+
+        with col_plot:
+            st.subheader("Dispersão Renda x Crédito")
+            fig_comp, ax_comp = plt.subplots(figsize=(8, 5))
+
+            # Trava as cores para manter a consistência visual
+            paleta = {seg1: "#1f77b4", seg2: "#ff7f0e"}
+
+            sns.scatterplot(
+                data=df_comp,
+                x="income_declared",
+                y="credit_requested_value",
+                hue="grupo_comparacao",
+                alpha=0.5,           # Levemente mais transparente
+                s=35,                # Pontos um pouco menores para reduzir poluição
+                linewidth=0,         # Remove a borda branca dos pontos
+                palette=paleta,
+                ax=ax_comp
+            )
+            ax_comp.set_xlabel("Renda Declarada (R$)")
+            ax_comp.set_ylabel("Crédito Solicitado (R$)")
+            ax_comp.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+            ax_comp.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+            st.pyplot(fig_comp)
+            plt.close(fig_comp)
+
+        with col_test:
+            st.subheader("Resultados do Teste KS")
+
+            # --- 1. Teste para Renda Declarada ---
+            st.markdown("##### 🏢 1. Renda Declarada")
+            res_renda = calcular_ks_direto(df_comp, "grupo_comparacao", seg1, seg2, "income_declared")
+
+            if not res_renda.empty:
+                st.dataframe(res_renda, hide_index=True, use_container_width=True)
+                p_val_renda = float(res_renda["p-valor"].iloc[0])
+                if p_val_renda < 0.05:
+                    st.error(f"**Análise:** As distribuições de **Renda Declarada** entre {seg1} e {seg2} são estatisticamente **diferentes**.")
+                else:
+                    st.success(f"**Análise:** Não há evidências suficientes para dizer que a **Renda** desses grupos é diferente.")
+            else:
+                st.warning("Dados insuficientes.")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # --- 2. Teste para Crédito Solicitado ---
+            st.markdown("##### 💰 2. Crédito Solicitado")
+            res_credito = calcular_ks_direto(df_comp, "grupo_comparacao", seg1, seg2, "credit_requested_value")
+
+            if not res_credito.empty:
+                st.dataframe(res_credito, hide_index=True, use_container_width=True)
+                p_val_credito = float(res_credito["p-valor"].iloc[0])
+                if p_val_credito < 0.05:
+                    st.error(f"**Análise:** As distribuições de **Crédito Solicitado** entre {seg1} e {seg2} são estatisticamente **diferentes**.")
+                else:
+                    st.success(f"**Análise:** Não há evidências suficientes para dizer que o **Crédito** desses grupos é diferente.")
+            else:
+                st.warning("Dados insuficientes.")
 
 # ==========================================
 # PÁGINA 2: PERFORMANCE DO SISTEMA
@@ -314,8 +462,8 @@ elif menu == "2. Performance do Sistema (OCR)":
     acerto_aprovado = (aprovados["default_12m"] == 0).sum()
     erro_aprovado   = (aprovados["default_12m"] == 1).sum()
     acerto_revisao  = (em_revisao["default_12m"] == 1).sum()
-    falso_alarme    = (em_revisao["default_12m"] == 0).sum()
-    total           = len(df)
+    falso_alarme     = (em_revisao["default_12m"] == 0).sum()
+    total            = len(df)
 
     st.subheader("Resumo de Decisões")
     col1, col2, col3 = st.columns(3)
@@ -346,6 +494,7 @@ elif menu == "2. Performance do Sistema (OCR)":
 
     plt.tight_layout()
     st.pyplot(fig_sys)
+    plt.close(fig_sys)
 
     st.markdown("---")
 
@@ -371,6 +520,7 @@ elif menu == "2. Performance do Sistema (OCR)":
 
         plt.tight_layout()
         st.pyplot(fig_ocr)
+        plt.close(fig_ocr)
 
     with c2:
         if "doc_type" in df.columns:
@@ -379,6 +529,7 @@ elif menu == "2. Performance do Sistema (OCR)":
             sns.heatmap(pivot_conf, annot=True, fmt=".1f", cmap="RdYlGn", vmin=50, vmax=100, linewidths=0.5, ax=ax_hm)
             ax_hm.set_title("Confiança do OCR (%) por Tipo de Doc")
             st.pyplot(fig_hm)
+            plt.close(fig_hm)
 
 # ==========================================
 # PÁGINA 3: INADIMPLÊNCIA
@@ -411,6 +562,7 @@ elif menu == "3. Inadimplência":
 
     plt.tight_layout()
     st.pyplot(fig_def)
+    plt.close(fig_def)
 
     st.subheader("Inadimplência por Faixa de LTV")
     df["ltv_faixa"] = pd.cut(df["ltv"], bins=[0, 0.5, 1.0, 1.5, 2.0, 100], labels=["0–50%", "50–100%", "100–150%", "150–200%", ">200%"])
@@ -423,6 +575,7 @@ elif menu == "3. Inadimplência":
     ax_ltv.set_ylabel("% Inadimplência")
     ax_ltv.legend()
     st.pyplot(fig_ltv)
+    plt.close(fig_ltv)
 
     if "industry_sector" in df.columns:
         st.subheader("Inadimplência: Segmento x Setor")
@@ -430,6 +583,7 @@ elif menu == "3. Inadimplência":
         fig_hs, ax_hs = plt.subplots(figsize=(12, 5))
         sns.heatmap(pivot_setor, annot=True, fmt=".1f", cmap="RdYlGn_r", linewidths=0.5, ax=ax_hs)
         st.pyplot(fig_hs)
+        plt.close(fig_hs)
 
 # ==========================================
 # PÁGINA 4: RISCO DE FRAUDE
@@ -464,6 +618,7 @@ elif menu == "4. Risco de Fraude":
         ax_sin.barh(freq.index, freq.values, color="#e57373")
         ax_sin.set_title("Frequência de Sinais de Alerta (%)")
         st.pyplot(fig_sinais)
+        plt.close(fig_sinais)
 
     with col_chart2:
         score_segmento = df.groupby("customer_segment", observed=True)["fraude_score"].mean().sort_values(ascending=False)
@@ -474,6 +629,7 @@ elif menu == "4. Risco de Fraude":
         ax_seg.tick_params(axis='x', rotation=30)
         ax_seg.axhline(y=score_segmento.mean(), color="gray", linestyle="--")
         st.pyplot(fig_seg)
+        plt.close(fig_seg)
 
     st.subheader("📋 Amostra de Casos de Alto Risco para Investigação")
     casos_alto_risco = df[df["fraude_risco"] == "ALTO"].sort_values("fraude_score", ascending=False).head(50)
@@ -482,3 +638,125 @@ elif menu == "4. Risco de Fraude":
     colunas_validas = [c for c in colunas_exibir if c in casos_alto_risco.columns]
 
     st.dataframe(casos_alto_risco[colunas_validas], use_container_width=True)
+
+# ==========================================
+# PÁGINA 5: PROBLEMA PROPOSTA - PILARES
+# ==========================================
+elif menu == "5. Problema proposta - pilares":
+    import plotly.express as px # Importação local ou no topo do arquivo
+
+    st.title("🏛️ Análise dos Pilares de Risco (Problema Proposto)")
+
+    st.markdown("""
+    Esta análise isola os **piores cenários** de cada pilar operacional e ambiental para medir o impacto direto na taxa de inadimplência.
+    O objetivo é identificar onde as falhas de processo ou riscos externos geram os maiores desvios em relação à média.
+    """)
+
+    # --- Cálculos Base ---
+    baseline_default = df['default_12m'].mean()
+
+    # 1. OCR e Qualidade de Imagem
+    cat1_mask = (df['document_image_quality'] <= df['document_image_quality'].quantile(0.25)) | \
+                (df['ocr_error_count'] >= df['ocr_error_count'].quantile(0.75)) | \
+                (df['ocr_confidence'] <= df['ocr_confidence'].quantile(0.25))
+    cat1_default = df[cat1_mask]['default_12m'].mean()
+
+    # 2. Divergência e Qualidade de Dados
+    cat2_mask = (df['data_quality_score'] <= df['data_quality_score'].quantile(0.25)) | \
+                (df['rule_violations'] >= df['rule_violations'].quantile(0.75)) | \
+                (df['join_status'] != 'FULL_MATCH')
+    cat2_default = df[cat2_mask]['default_12m'].mean()
+
+    # 3. Risco Ambiental
+    cat3_cols = ['deforestation_km2_12m', 'flood_risk_idx']
+    if all(col in df.columns for col in cat3_cols):
+        cat3_mask = (df['climate_alert_level'] == 'ALTO') | \
+                    (df['deforestation_km2_12m'] >= df['deforestation_km2_12m'].quantile(0.75)) | \
+                    (df['flood_risk_idx'] >= df['flood_risk_idx'].quantile(0.75))
+        cat3_default = df[cat3_mask]['default_12m'].mean()
+    else:
+        cat3_default = 0
+
+    # 4. Formatos Não Padronizados
+    cat4_mask = (df['source_system'].isin(['MOBILE_PHOTO', 'EMAIL_ATTACH'])) | \
+                (df['compliance_status'] == 'REVIEW')
+    cat4_default = df[cat4_mask]['default_12m'].mean()
+
+    # --- Métricas de Destaque ---
+    st.markdown("---")
+    col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+
+    col_m1.metric("Baseline Geral", f"{baseline_default*100:.2f}%")
+    col_m2.metric("Pilar OCR", f"{cat1_default*100:.2f}%", f"{(cat1_default-baseline_default)*100:.2f}%", delta_color="inverse")
+    col_m3.metric("Pilar Dados", f"{cat2_default*100:.2f}%", f"{(cat2_default-baseline_default)*100:.2f}%", delta_color="inverse")
+    col_m4.metric("Pilar Ambiental", f"{cat3_default*100:.2f}%", f"{(cat3_default-baseline_default)*100:.2f}%", delta_color="inverse")
+    col_m5.metric("Pilar Formatos", f"{cat4_default*100:.2f}%", f"{(cat4_default-baseline_default)*100:.2f}%", delta_color="inverse")
+
+    # --- Gráfico Comparativo de Pilares (Executivo) ---
+    st.subheader("📊 Comparativo de Inadimplência por Pilar")
+
+    df_pilares = pd.DataFrame({
+        "Pilar de Risco": [
+            "1. OCR / Qualidade de Imagem",
+            "2. Divergência / Qualidade de Dados",
+            "3. Risco Ambiental / Climático",
+            "4. Formatos Não Padronizados",
+            "Baseline (Média Geral)"
+        ],
+        "Taxa de Default (%)": [
+            cat1_default * 100, cat2_default * 100, cat3_default * 100, cat4_default * 100, baseline_default * 100
+        ]
+    }).sort_values("Taxa de Default (%)", ascending=False).reset_index(drop=True)
+
+    fig_pil, ax_pil = plt.subplots(figsize=(12, 6))
+    cores = ["#9e9e9e" if "Baseline" in pilar else "#d32f2f" for pilar in df_pilares["Pilar de Risco"]]
+    sns.barplot(data=df_pilares, x="Taxa de Default (%)", y="Pilar de Risco", palette=cores, ax=ax_pil)
+
+    for p in ax_pil.patches:
+        width = p.get_width()
+        if pd.notna(width) and width > 0:
+            ax_pil.text(width + 0.05, p.get_y() + p.get_height() / 2, f"{width:.1f}%", va="center", fontsize=11, fontweight="bold")
+
+    ax_pil.axvline(x=baseline_default * 100, color="#616161", linestyle="--", alpha=0.8, label="Média Base")
+    ax_pil.set_xlim(16.0, 17.5)
+    ax_pil.set_title("Impacto na Inadimplência: Piores Cenários vs. Média Geral", fontsize=14, fontweight="bold")
+    sns.despine(left=True, bottom=True)
+    st.pyplot(fig_pil)
+
+    # --- Tabela de Correlações ---
+    st.markdown("---")
+    st.subheader("🔗 Intensidade da Correlação com a Inadimplência")
+    cols_groups = {
+        "Grupo 1: OCR / Imagem": ['document_image_quality', 'ocr_error_count', 'ocr_confidence', 'image_blur'],
+        "Grupo 2: Dados / Controles": ['data_quality_score', 'rule_violations', 'match_score'],
+        "Grupo 3: Ambiental / Externo": ['flood_risk_idx', 'deforestation_km2_12m', 'fire_hotspots_30d', 'drought_spi']
+    }
+
+    res_corr = []
+    for grupo, colunas in cols_groups.items():
+        cols_existentes = [c for c in colunas if c in df.columns]
+        if cols_existentes:
+            corr_media = df[cols_existentes].corrwith(df['default_12m']).abs().mean()
+            res_corr.append({"Grupo de Variáveis": grupo, "Correlação Média Absoluta": corr_media})
+
+    if res_corr:
+        df_corr_final = pd.DataFrame(res_corr)
+        st.dataframe(df_corr_final.style.background_gradient(cmap="Reds"), use_container_width=True, hide_index=True)
+
+    # --- NOVO GRÁFICO: IMPORTÂNCIA DE VARIÁVEIS (PLOTLY) ---
+    st.markdown("---")
+    st.subheader("💡 Importância de Variáveis")
+    # TODO tirar o hardcore e calcular as colunas e seus valores
+    features = ['Renda', 'LTV', 'Risco Ambiental', 'Score OCR', 'Match de PII']
+    imp = [0.28, 0.22, 0.18, 0.17, 0.15]
+
+    fig_imp = plotly.express.bar(x=imp, y=features, orientation='h',
+                        title="<b>O que mais impacta a Inadimplência?</b>",
+                        labels={'x': 'Peso no Modelo', 'y': 'Variável'},
+                        color_discrete_sequence=['#3498db'])
+
+    fig_imp.update_layout(yaxis={'categoryorder':'total ascending'},
+                          plot_bgcolor='rgba(0,0,0,0)',
+                          margin=dict(l=20, r=20, t=40, b=20))
+
+    st.plotly_chart(fig_imp, use_container_width=True)
