@@ -17,18 +17,22 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Estilo global dos gráficos
-sns.set_theme(style="whitegrid", palette="muted", font_scale=1.0)
-plt.rcParams.update({
-    "figure.dpi": 100,
-    "figure.facecolor": "white",
-    "axes.facecolor": "white",
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "axes.titlesize": 12,
-    "axes.titleweight": "bold",
-    "axes.labelsize": 10,
-})
+# Caching the global style to avoid re-applying it on every rerun
+@st.cache_resource
+def apply_global_styles():
+    sns.set_theme(style="whitegrid", palette="muted", font_scale=1.0)
+    plt.rcParams.update({
+        "figure.dpi": 100,
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.titlesize": 12,
+        "axes.titleweight": "bold",
+        "axes.labelsize": 10,
+    })
+
+apply_global_styles()
 
 # ==========================================
 # Carregamento e Processamento de Dados
@@ -149,6 +153,7 @@ if menu == "1. Visão por Segmentos":
 
     plt.tight_layout()
     st.pyplot(fig1)
+    plt.close(fig1) # Reduce memory
 
     # Taxas de Aprovação e Default
     st.subheader("Taxas de Aprovação e Inadimplência")
@@ -177,6 +182,7 @@ if menu == "1. Visão por Segmentos":
 
     plt.tight_layout()
     st.pyplot(fig2)
+    plt.close(fig2)
 
     # Perfil Financeiro - Barras Horizontais
     st.subheader("Perfil Financeiro por Segmento")
@@ -205,6 +211,7 @@ if menu == "1. Visão por Segmentos":
 
     plt.tight_layout()
     st.pyplot(fig3)
+    plt.close(fig3)
 
     # ==========================================
     # PAINEL DE CONTROLE: QUARTIL, MÉTRICA E SEGMENTOS
@@ -313,6 +320,7 @@ if menu == "1. Visão por Segmentos":
 
     plt.tight_layout()
     st.pyplot(fig4)
+    plt.close(fig4)
 
     st.markdown("---")
     st.markdown("""
@@ -405,6 +413,7 @@ if menu == "1. Visão por Segmentos":
             ax_comp.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
             ax_comp.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
             st.pyplot(fig_comp)
+            plt.close(fig_comp)
 
         with col_test:
             st.subheader("Resultados do Teste KS")
@@ -451,8 +460,8 @@ elif menu == "2. Performance do Sistema (OCR)":
     acerto_aprovado = (aprovados["default_12m"] == 0).sum()
     erro_aprovado   = (aprovados["default_12m"] == 1).sum()
     acerto_revisao  = (em_revisao["default_12m"] == 1).sum()
-    falso_alarme    = (em_revisao["default_12m"] == 0).sum()
-    total           = len(df)
+    falso_alarme     = (em_revisao["default_12m"] == 0).sum()
+    total            = len(df)
 
     st.subheader("Resumo de Decisões")
     col1, col2, col3 = st.columns(3)
@@ -483,6 +492,7 @@ elif menu == "2. Performance do Sistema (OCR)":
 
     plt.tight_layout()
     st.pyplot(fig_sys)
+    plt.close(fig_sys)
 
     st.markdown("---")
 
@@ -508,6 +518,7 @@ elif menu == "2. Performance do Sistema (OCR)":
 
         plt.tight_layout()
         st.pyplot(fig_ocr)
+        plt.close(fig_ocr)
 
     with c2:
         if "doc_type" in df.columns:
@@ -516,6 +527,7 @@ elif menu == "2. Performance do Sistema (OCR)":
             sns.heatmap(pivot_conf, annot=True, fmt=".1f", cmap="RdYlGn", vmin=50, vmax=100, linewidths=0.5, ax=ax_hm)
             ax_hm.set_title("Confiança do OCR (%) por Tipo de Doc")
             st.pyplot(fig_hm)
+            plt.close(fig_hm)
 
 # ==========================================
 # PÁGINA 3: INADIMPLÊNCIA
@@ -548,6 +560,7 @@ elif menu == "3. Inadimplência":
 
     plt.tight_layout()
     st.pyplot(fig_def)
+    plt.close(fig_def)
 
     st.subheader("Inadimplência por Faixa de LTV")
     df["ltv_faixa"] = pd.cut(df["ltv"], bins=[0, 0.5, 1.0, 1.5, 2.0, 100], labels=["0–50%", "50–100%", "100–150%", "150–200%", ">200%"])
@@ -560,6 +573,7 @@ elif menu == "3. Inadimplência":
     ax_ltv.set_ylabel("% Inadimplência")
     ax_ltv.legend()
     st.pyplot(fig_ltv)
+    plt.close(fig_ltv)
 
     if "industry_sector" in df.columns:
         st.subheader("Inadimplência: Segmento x Setor")
@@ -567,6 +581,7 @@ elif menu == "3. Inadimplência":
         fig_hs, ax_hs = plt.subplots(figsize=(12, 5))
         sns.heatmap(pivot_setor, annot=True, fmt=".1f", cmap="RdYlGn_r", linewidths=0.5, ax=ax_hs)
         st.pyplot(fig_hs)
+        plt.close(fig_hs)
 
 # ==========================================
 # PÁGINA 4: RISCO DE FRAUDE
@@ -601,6 +616,7 @@ elif menu == "4. Risco de Fraude":
         ax_sin.barh(freq.index, freq.values, color="#e57373")
         ax_sin.set_title("Frequência de Sinais de Alerta (%)")
         st.pyplot(fig_sinais)
+        plt.close(fig_sinais)
 
     with col_chart2:
         score_segmento = df.groupby("customer_segment", observed=True)["fraude_score"].mean().sort_values(ascending=False)
@@ -611,6 +627,7 @@ elif menu == "4. Risco de Fraude":
         ax_seg.tick_params(axis='x', rotation=30)
         ax_seg.axhline(y=score_segmento.mean(), color="gray", linestyle="--")
         st.pyplot(fig_seg)
+        plt.close(fig_seg)
 
     st.subheader("📋 Amostra de Casos de Alto Risco para Investigação")
     casos_alto_risco = df[df["fraude_risco"] == "ALTO"].sort_values("fraude_score", ascending=False).head(50)
