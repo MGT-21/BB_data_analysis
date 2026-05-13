@@ -715,7 +715,7 @@ elif menu == "5. Problema proposta - pilares":
     for p in ax_pil.patches:
         width = p.get_width()
         if pd.notna(width) and width > 0:
-            ax_pil.text(width + 0.05, p.get_y() + p.get_height() / 2, f"{width:.1f}%", va="center", fontsize=11, fontweight="bold")
+            ax_pil.text(width + 0.05, p.get_y() + p.get_height() / 2, f"{width:.2f}%", va="center", fontsize=11, fontweight="bold")
 
     ax_pil.axvline(x=baseline_default * 100, color="#616161", linestyle="--", alpha=0.8, label="Média Base")
     ax_pil.set_xlim(16.0, 17.5)
