@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import seaborn as sns
-import plotly
+import plotly.express as px
 import os
 from scipy.stats import ks_2samp
 
@@ -18,7 +18,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Caching the global style to avoid re-applying it on every rerun
 @st.cache_resource
 def apply_global_styles():
     sns.set_theme(style="whitegrid", palette="muted", font_scale=1.0)
@@ -40,16 +39,18 @@ apply_global_styles()
 # ==========================================
 @st.cache_data
 def load_data():
-    """Carrega os dados e processa as regras de fraude para uso em todo o app."""
+    """
+    Carrega os dados e processa TODAS as features derivadas aqui dentro,
+    evitando mutações no DataFrame cacheado fora desta função.
+    """
     try:
         from config import SILVER_DATASET
         df = pd.read_csv(SILVER_DATASET)
     except ImportError:
-        # Fallback caso não encontre o arquivo config.py
         st.warning("⚠️ Arquivo config.py não encontrado. Tentando ler 'silver_dataset.csv' localmente.")
         df = pd.read_csv("silver_dataset.csv")
 
-    # ---- Criação das features de Fraude baseadas no notebook ----
+    # ---- Features de Fraude ----
     if "fraude_score" not in df.columns:
         df["fraude_idioma_estrangeiro"] = (df.get("text_language", "PT") != "PT").astype(int)
         df["fraude_sem_garantia"]       = (df.get("collateral_type", "") == "SEM_GARANTIA").astype(int)
@@ -65,7 +66,6 @@ def load_data():
             "fraude_pii_idioma", "fraude_muitas_violacoes", "fraude_duplicado",
             "fraude_ocr_baixo", "fraude_compliance_review"
         ]
-
         sinais_existentes = [s for s in sinais if s in df.columns]
         df["fraude_score"] = df[sinais_existentes].sum(axis=1)
         df["fraude_risco"] = pd.cut(
@@ -73,7 +73,22 @@ def load_data():
             bins=[-1, 1, 3, 8],
             labels=["BAIXO", "MEDIO", "ALTO"]
         )
+
+    # ---- Features derivadas usadas em múltiplas páginas ----
+    # Calculadas uma vez aqui em vez de em cada rerun
+    if "ratio" not in df.columns:
+        df["ratio"] = df["credit_requested_value"] / df["income_declared"]
+        df["ratio"] = df["ratio"].replace([np.inf, -np.inf], np.nan)
+
+    if "ltv_faixa" not in df.columns:
+        df["ltv_faixa"] = pd.cut(
+            df["ltv"],
+            bins=[0, 0.5, 1.0, 1.5, 2.0, 100],
+            labels=["0–50%", "50–100%", "100–150%", "150–200%", ">200%"]
+        )
+
     return df
+
 
 try:
     df = load_data()
@@ -122,7 +137,6 @@ if menu == "1. Visão por Segmentos":
         .sort_values("valor_total", ascending=False)
     )
 
-    # Métricas Globais
     col1, col2, col3 = st.columns(3)
     col1.metric("Segmentos Únicos", df["customer_segment"].nunique())
     col2.metric("Valor Total Solicitado", f"R$ {resumo['valor_total'].sum():,.0f}")
@@ -130,11 +144,9 @@ if menu == "1. Visão por Segmentos":
 
     st.markdown("---")
 
-    # Volume e Valor
     st.subheader("Volume e Valor de Crédito")
     fig1, axes1 = plt.subplots(1, 2, figsize=(15, 5))
 
-    # Número de solicitações
     sns.barplot(data=resumo, x="customer_segment", y="total", hue="customer_segment", palette="Blues_d", legend=False, ax=axes1[0])
     for bar, val in zip(axes1[0].patches, resumo["total"]):
         axes1[0].text(bar.get_x() + bar.get_width()/2, bar.get_height() + (val*0.02), f"{int(val):,}", ha="center", fontsize=9, fontweight="bold")
@@ -143,7 +155,6 @@ if menu == "1. Visão por Segmentos":
     axes1[0].set_xlabel("")
     axes1[0].tick_params(axis='x', rotation=30)
 
-    # Valor Médio
     resumo_sorted_vm = resumo.sort_values("valor_medio", ascending=False)
     sns.barplot(data=resumo_sorted_vm, x="customer_segment", y="valor_medio", hue="customer_segment", palette="Oranges_d", legend=False, ax=axes1[1])
     for bar, val in zip(axes1[1].patches, resumo_sorted_vm["valor_medio"]):
@@ -155,9 +166,8 @@ if menu == "1. Visão por Segmentos":
 
     plt.tight_layout()
     st.pyplot(fig1)
-    plt.close(fig1) # Reduce memory
+    plt.close(fig1)
 
-    # Taxas de Aprovação e Default
     st.subheader("Taxas de Aprovação e Inadimplência")
     fig2, axes2 = plt.subplots(1, 2, figsize=(15, 5))
 
@@ -186,7 +196,6 @@ if menu == "1. Visão por Segmentos":
     st.pyplot(fig2)
     plt.close(fig2)
 
-    # Perfil Financeiro - Barras Horizontais
     st.subheader("Perfil Financeiro por Segmento")
     fig3, axes3 = plt.subplots(1, 3, figsize=(18, 6))
     ordem_renda = resumo.sort_values("valor_medio", ascending=True)["customer_segment"]
@@ -215,13 +224,9 @@ if menu == "1. Visão por Segmentos":
     st.pyplot(fig3)
     plt.close(fig3)
 
-    # ==========================================
-    # PAINEL DE CONTROLE: QUARTIL, MÉTRICA E SEGMENTOS
-    # ==========================================
     st.markdown("---")
     st.subheader("🔍 Filtros Dinâmicos de Distribuição")
 
-    # 1. Seleção de Segmentos (Multiselect)
     segmentos_disponiveis = sorted(df["customer_segment"].dropna().unique())
     segmentos_selecionados = st.multiselect(
         "Selecione os Segmentos Visíveis:",
@@ -244,10 +249,9 @@ if menu == "1. Visão por Segmentos":
         )
 
     with col_sel3:
-        st.markdown("<br>", unsafe_allow_html=True) # Alinhamento vertical com as caixas de seleção
+        st.markdown("<br>", unsafe_allow_html=True)
         remover_outliers = st.checkbox("Remover Outliers (IQR)", value=False)
 
-    # Mapeamento e criação da coluna Ratio
     mapa_metrica = {
         "Renda Declarada": "income_declared",
         "Crédito Solicitado": "credit_requested_value",
@@ -255,74 +259,62 @@ if menu == "1. Visão por Segmentos":
     }
     col_alvo = mapa_metrica[metrica_sel]
 
-    if "ratio" not in df.columns:
-        df["ratio"] = df["credit_requested_value"] / df["income_declared"]
-        df["ratio"].replace([np.inf, -np.inf], np.nan, inplace=True)
-
-    # ==========================================
-    # GERAÇÃO DO GRÁFICO (FIG4)
-    # ==========================================
+    # FIX: use 'with' context manager to guarantee figure is always closed,
+    # even if an exception is raised mid-render.
     fig4, ax4 = plt.subplots(figsize=(16, 7))
+    try:
+        cores_map = dict(zip(segmentos_disponiveis, sns.color_palette("tab10", len(segmentos_disponiveis))))
 
-    # Cores fixas para cada segmento para manter consistência visual ao filtrar
-    cores_map = dict(zip(segmentos_disponiveis, sns.color_palette("tab10", len(segmentos_disponiveis))))
+        for seg in segmentos_selecionados:
+            dados_seg = df[df["customer_segment"] == seg][col_alvo].dropna()
 
-    for seg in segmentos_selecionados:
-        # Filtro de segmento e remoção de nulos
-        dados_seg = df[df["customer_segment"] == seg][col_alvo].dropna()
+            if remover_outliers and not dados_seg.empty:
+                q1 = dados_seg.quantile(0.25)
+                q3 = dados_seg.quantile(0.75)
+                iqr = q3 - q1
+                dados_seg = dados_seg[(dados_seg >= (q1 - 1.5 * iqr)) & (dados_seg <= (q3 + 1.5 * iqr))]
 
-        # Remoção de Outliers via Método IQR, se selecionado
-        if remover_outliers and not dados_seg.empty:
-            q1 = dados_seg.quantile(0.25)
-            q3 = dados_seg.quantile(0.75)
-            iqr = q3 - q1
-            dados_seg = dados_seg[(dados_seg >= (q1 - 1.5 * iqr)) & (dados_seg <= (q3 + 1.5 * iqr))]
+            if not dados_seg.empty:
+                if opcao_q == "1º Quartil (0-25%)":
+                    lim_sup = dados_seg.quantile(0.25)
+                    dados_filtrados = dados_seg[dados_seg <= lim_sup]
+                elif opcao_q == "2º Quartil (25-50%)":
+                    lim_inf, lim_sup = dados_seg.quantile(0.25), dados_seg.quantile(0.50)
+                    dados_filtrados = dados_seg[(dados_seg > lim_inf) & (dados_seg <= lim_sup)]
+                elif opcao_q == "3º Quartil (50-75%)":
+                    lim_inf, lim_sup = dados_seg.quantile(0.50), dados_seg.quantile(0.75)
+                    dados_filtrados = dados_seg[(dados_seg > lim_inf) & (dados_seg <= lim_sup)]
+                elif opcao_q == "4º Quartil (75-100%)":
+                    lim_inf = dados_seg.quantile(0.75)
+                    dados_filtrados = dados_seg[dados_seg > lim_inf]
+                else:
+                    dados_filtrados = dados_seg
 
-        if not dados_seg.empty:
-            # Lógica de limites dos Quartis
-            if opcao_q == "1º Quartil (0-25%)":
-                lim_sup = dados_seg.quantile(0.25)
-                dados_filtrados = dados_seg[dados_seg <= lim_sup]
-            elif opcao_q == "2º Quartil (25-50%)":
-                lim_inf, lim_sup = dados_seg.quantile(0.25), dados_seg.quantile(0.50)
-                dados_filtrados = dados_seg[(dados_seg > lim_inf) & (dados_seg <= lim_sup)]
-            elif opcao_q == "3º Quartil (50-75%)":
-                lim_inf, lim_sup = dados_seg.quantile(0.50), dados_seg.quantile(0.75)
-                dados_filtrados = dados_seg[(dados_seg > lim_inf) & (dados_seg <= lim_sup)]
-            elif opcao_q == "4º Quartil (75-100%)":
-                lim_inf = dados_seg.quantile(0.75)
-                dados_filtrados = dados_seg[dados_seg > lim_inf]
-            else:
-                dados_filtrados = dados_seg
+                if not dados_filtrados.empty:
+                    sorted_vals = np.sort(dados_filtrados.values)
+                    ax4.plot(
+                        range(len(sorted_vals)),
+                        sorted_vals,
+                        color=cores_map[seg],
+                        label=seg,
+                        linewidth=2.5,
+                        alpha=0.8
+                    )
 
-            # Ordenação e Plotagem (.values garante que o sort receba a série numérica)
-            if not dados_filtrados.empty:
-                sorted_vals = np.sort(dados_filtrados.values)
-                ax4.plot(
-                    range(len(sorted_vals)),
-                    sorted_vals,
-                    color=cores_map[seg],
-                    label=seg,
-                    linewidth=2.5,
-                    alpha=0.8
-                )
+        ax4.set_title(f"{metrica_sel} | {opcao_q}", fontsize=16, fontweight='bold', pad=20)
+        ax4.set_ylabel("Valor")
+        ax4.set_xlabel("Nº de Registros (Ordenados)")
+        ax4.grid(axis='y', linestyle='--', alpha=0.5)
 
-    # Formatação Final
-    ax4.set_title(f"{metrica_sel} | {opcao_q}", fontsize=16, fontweight='bold', pad=20)
-    ax4.set_ylabel("Valor")
-    ax4.set_xlabel("Nº de Registros (Ordenados)")
-    ax4.grid(axis='y', linestyle='--', alpha=0.5)
+        if col_alvo in ["income_declared", "credit_requested_value"]:
+            ax4.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"R${x:,.0f}"))
 
-    # Formatação de moeda R$
-    if col_alvo in ["income_declared", "credit_requested_value"]:
-        ax4.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"R${x:,.0f}"))
+        ax4.legend(title="Segmentos Ativos", bbox_to_anchor=(1.02, 1), loc='upper left', frameon=True)
 
-    # Legenda fora do gráfico
-    ax4.legend(title="Segmentos Ativos", bbox_to_anchor=(1.02, 1), loc='upper left', frameon=True)
-
-    plt.tight_layout()
-    st.pyplot(fig4)
-    plt.close(fig4)
+        plt.tight_layout()
+        st.pyplot(fig4)
+    finally:
+        plt.close(fig4)
 
     st.markdown("---")
     st.markdown("""
@@ -333,7 +325,6 @@ if menu == "1. Visão por Segmentos":
     * **Teste KS (Kolmogorov-Smirnov):** Aplicado à **Renda Declarada** e ao **Crédito Solicitado**. Se o **p-valor < 0,05**, rejeitamos a hipótese nula, indicando que as distribuições dos grupos são estatisticamente diferentes.
     """)
 
-    # Função auxiliar otimizada para comparar 2 grupos com coluna dinâmica
     def calcular_ks_direto(df_teste, col_grupo, g1, g2, col_valor):
         s1 = df_teste[df_teste[col_grupo] == g1][col_valor].dropna()
         s2 = df_teste[df_teste[col_grupo] == g2][col_valor].dropna()
@@ -351,10 +342,7 @@ if menu == "1. Visão por Segmentos":
             "Conclusão (α=0.05)": mesma_dist
         }])
 
-    # Obter lista de segmentos individuais em ordem alfabética
     segmentos_individuais = sorted(df["customer_segment"].dropna().unique().tolist())
-
-    # Adiciona os macro-grupos no topo das opções de seleção
     opcoes_selecao = ["AGRO (Todos)", "PJ (Todos)"] + segmentos_individuais
 
     col_sel1, col_sel2 = st.columns(2)
@@ -363,13 +351,9 @@ if menu == "1. Visão por Segmentos":
     with col_sel2:
         seg2 = st.selectbox("🟠 Selecione o Grupo B:", opcoes_selecao, index=1)
 
-    # Validação para evitar comparar o mesmo grupo
     if seg1 == seg2:
         st.warning("⚠️ Por favor, selecione dois grupos diferentes para realizar a comparação.")
     else:
-        # -------------------------------------------------------------
-        # Lógica de Agrupamento Dinâmico
-        # -------------------------------------------------------------
         def preparar_dados(df_base, escolha):
             if escolha == "AGRO (Todos)":
                 filtro = df_base["customer_segment"].isin(["AGRO_PEQUENO", "AGRO_MEDIO", "AGRO_GRANDE"])
@@ -378,16 +362,12 @@ if menu == "1. Visão por Segmentos":
             else:
                 filtro = df_base["customer_segment"] == escolha
 
-            # Cria um dataframe isolado e renomeia o segmento para o nome escolhido
             df_temp = df_base[filtro].copy()
             df_temp["grupo_comparacao"] = escolha
             return df_temp
 
-        # Prepara os dados de A e B
         df_g1 = preparar_dados(df, seg1)
         df_g2 = preparar_dados(df, seg2)
-
-        # Junta e EMBARALHA os dados para evitar que um grupo esconda o outro no gráfico
         df_comp = pd.concat([df_g1, df_g2]).sample(frac=1, random_state=42).reset_index(drop=True)
 
         col_plot, col_test = st.columns([1.5, 1])
@@ -395,32 +375,30 @@ if menu == "1. Visão por Segmentos":
         with col_plot:
             st.subheader("Dispersão Renda x Crédito")
             fig_comp, ax_comp = plt.subplots(figsize=(8, 5))
-
-            # Trava as cores para manter a consistência visual
-            paleta = {seg1: "#1f77b4", seg2: "#ff7f0e"}
-
-            sns.scatterplot(
-                data=df_comp,
-                x="income_declared",
-                y="credit_requested_value",
-                hue="grupo_comparacao",
-                alpha=0.5,           # Levemente mais transparente
-                s=35,                # Pontos um pouco menores para reduzir poluição
-                linewidth=0,         # Remove a borda branca dos pontos
-                palette=paleta,
-                ax=ax_comp
-            )
-            ax_comp.set_xlabel("Renda Declarada (R$)")
-            ax_comp.set_ylabel("Crédito Solicitado (R$)")
-            ax_comp.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
-            ax_comp.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
-            st.pyplot(fig_comp)
-            plt.close(fig_comp)
+            try:
+                paleta = {seg1: "#1f77b4", seg2: "#ff7f0e"}
+                sns.scatterplot(
+                    data=df_comp,
+                    x="income_declared",
+                    y="credit_requested_value",
+                    hue="grupo_comparacao",
+                    alpha=0.5,
+                    s=35,
+                    linewidth=0,
+                    palette=paleta,
+                    ax=ax_comp
+                )
+                ax_comp.set_xlabel("Renda Declarada (R$)")
+                ax_comp.set_ylabel("Crédito Solicitado (R$)")
+                ax_comp.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+                ax_comp.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+                st.pyplot(fig_comp)
+            finally:
+                plt.close(fig_comp)
 
         with col_test:
             st.subheader("Resultados do Teste KS")
 
-            # --- 1. Teste para Renda Declarada ---
             st.markdown("##### 🏢 1. Renda Declarada")
             res_renda = calcular_ks_direto(df_comp, "grupo_comparacao", seg1, seg2, "income_declared")
 
@@ -436,7 +414,6 @@ if menu == "1. Visão por Segmentos":
 
             st.markdown("<br>", unsafe_allow_html=True)
 
-            # --- 2. Teste para Crédito Solicitado ---
             st.markdown("##### 💰 2. Crédito Solicitado")
             res_credito = calcular_ks_direto(df_comp, "grupo_comparacao", seg1, seg2, "credit_requested_value")
 
@@ -462,8 +439,8 @@ elif menu == "2. Performance do Sistema (OCR)":
     acerto_aprovado = (aprovados["default_12m"] == 0).sum()
     erro_aprovado   = (aprovados["default_12m"] == 1).sum()
     acerto_revisao  = (em_revisao["default_12m"] == 1).sum()
-    falso_alarme     = (em_revisao["default_12m"] == 0).sum()
-    total            = len(df)
+    falso_alarme    = (em_revisao["default_12m"] == 0).sum()
+    total           = len(df)
 
     st.subheader("Resumo de Decisões")
     col1, col2, col3 = st.columns(3)
@@ -472,32 +449,32 @@ elif menu == "2. Performance do Sistema (OCR)":
     col3.metric("Taxa de Erro Geral", f"{erro_aprovado/total*100:.1f}%", help="Aprovações que viraram inadimplência sobre o total.")
 
     fig_sys, axes_sys = plt.subplots(1, 3, figsize=(16, 6))
+    try:
+        val_apr = [acerto_aprovado/len(aprovados)*100, erro_aprovado/len(aprovados)*100]
+        axes_sys[0].bar(["APPROVE"], [val_apr[0]], color="#4caf50", width=0.5)
+        axes_sys[0].bar(["APPROVE"], [val_apr[1]], bottom=[val_apr[0]], color="#f44336", width=0.5)
+        axes_sys[0].set_title(f"APPROVE ({len(aprovados):,})")
+        axes_sys[0].set_ylabel("% dos casos")
+        axes_sys[0].legend(["Acertou (pagou)", "Errou (inadimpliu)"], loc="upper right", fontsize=9)
 
-    val_apr = [acerto_aprovado/len(aprovados)*100, erro_aprovado/len(aprovados)*100]
-    axes_sys[0].bar(["APPROVE"], [val_apr[0]], color="#4caf50", width=0.5)
-    axes_sys[0].bar(["APPROVE"], [val_apr[1]], bottom=[val_apr[0]], color="#f44336", width=0.5)
-    axes_sys[0].set_title(f"APPROVE ({len(aprovados):,})")
-    axes_sys[0].set_ylabel("% dos casos")
-    axes_sys[0].legend(["Acertou (pagou)", "Errou (inadimpliu)"], loc="upper right", fontsize=9)
+        val_rev = [acerto_revisao/len(em_revisao)*100, falso_alarme/len(em_revisao)*100]
+        axes_sys[1].bar(["REVIEW"], [val_rev[0]], color="#4caf50", width=0.5)
+        axes_sys[1].bar(["REVIEW"], [val_rev[1]], bottom=[val_rev[0]], color="#ff9800", width=0.5)
+        axes_sys[1].set_title(f"REVIEW ({len(em_revisao):,})")
+        axes_sys[1].legend(["Acertou (risco real)", "Falso alarme (pagou)"], loc="upper right", fontsize=9)
 
-    val_rev = [acerto_revisao/len(em_revisao)*100, falso_alarme/len(em_revisao)*100]
-    axes_sys[1].bar(["REVIEW"], [val_rev[0]], color="#4caf50", width=0.5)
-    axes_sys[1].bar(["REVIEW"], [val_rev[1]], bottom=[val_rev[0]], color="#ff9800", width=0.5)
-    axes_sys[1].set_title(f"REVIEW ({len(em_revisao):,})")
-    axes_sys[1].legend(["Acertou (risco real)", "Falso alarme (pagou)"], loc="upper right", fontsize=9)
+        categorias = ["Aprovado/Pagou", "Aprovado/Inadimpliu", "Revisão/Risco Real", "Revisão/Falso Alarme"]
+        valores_pizza = [acerto_aprovado, erro_aprovado, acerto_revisao, falso_alarme]
+        cores_pizza   = ["#4caf50", "#f44336", "#81c784", "#ff9800"]
+        axes_sys[2].pie(valores_pizza, labels=categorias, colors=cores_pizza, autopct="%1.1f%%", explode=[0, 0.05, 0, 0.05])
+        axes_sys[2].set_title("Visão Geral - Todas as Decisões")
 
-    categorias = ["Aprovado/Pagou", "Aprovado/Inadimpliu", "Revisão/Risco Real", "Revisão/Falso Alarme"]
-    valores_pizza = [acerto_aprovado, erro_aprovado, acerto_revisao, falso_alarme]
-    cores_pizza   = ["#4caf50", "#f44336", "#81c784", "#ff9800"]
-    axes_sys[2].pie(valores_pizza, labels=categorias, colors=cores_pizza, autopct="%1.1f%%", explode=[0, 0.05, 0, 0.05])
-    axes_sys[2].set_title("Visão Geral - Todas as Decisões")
-
-    plt.tight_layout()
-    st.pyplot(fig_sys)
-    plt.close(fig_sys)
+        plt.tight_layout()
+        st.pyplot(fig_sys)
+    finally:
+        plt.close(fig_sys)
 
     st.markdown("---")
-
     st.subheader("Performance dos Motores OCR")
 
     c1, c2 = st.columns(2)
@@ -508,28 +485,32 @@ elif menu == "2. Performance do Sistema (OCR)":
             .reset_index().sort_values("erros_medio", ascending=False)
         )
         fig_ocr, axes_ocr = plt.subplots(1, 2, figsize=(10, 4))
-        sns.barplot(data=erros_motor, x="ocr_engine", y="erros_medio", hue="ocr_engine", palette="Blues_r", legend=False, ax=axes_ocr[0])
-        axes_ocr[0].set_title("Erros por Documento")
-        axes_ocr[0].tick_params(axis='x', rotation=30)
+        try:
+            sns.barplot(data=erros_motor, x="ocr_engine", y="erros_medio", hue="ocr_engine", palette="Blues_r", legend=False, ax=axes_ocr[0])
+            axes_ocr[0].set_title("Erros por Documento")
+            axes_ocr[0].tick_params(axis='x', rotation=30)
 
-        ordem_conf = erros_motor.sort_values("confianca_media", ascending=False)
-        sns.barplot(data=ordem_conf, x="ocr_engine", y="confianca_media", hue="ocr_engine", palette="Greens_r", legend=False, ax=axes_ocr[1])
-        axes_ocr[1].set_title("Confiança Média (0-1)")
-        axes_ocr[1].set_ylim(0, 1.0)
-        axes_ocr[1].tick_params(axis='x', rotation=30)
+            ordem_conf = erros_motor.sort_values("confianca_media", ascending=False)
+            sns.barplot(data=ordem_conf, x="ocr_engine", y="confianca_media", hue="ocr_engine", palette="Greens_r", legend=False, ax=axes_ocr[1])
+            axes_ocr[1].set_title("Confiança Média (0-1)")
+            axes_ocr[1].set_ylim(0, 1.0)
+            axes_ocr[1].tick_params(axis='x', rotation=30)
 
-        plt.tight_layout()
-        st.pyplot(fig_ocr)
-        plt.close(fig_ocr)
+            plt.tight_layout()
+            st.pyplot(fig_ocr)
+        finally:
+            plt.close(fig_ocr)
 
     with c2:
         if "doc_type" in df.columns:
             pivot_conf = (df.groupby(["ocr_engine", "doc_type"], observed=True)["ocr_confidence"].mean().unstack() * 100)
             fig_hm, ax_hm = plt.subplots(figsize=(8, 4))
-            sns.heatmap(pivot_conf, annot=True, fmt=".1f", cmap="RdYlGn", vmin=50, vmax=100, linewidths=0.5, ax=ax_hm)
-            ax_hm.set_title("Confiança do OCR (%) por Tipo de Doc")
-            st.pyplot(fig_hm)
-            plt.close(fig_hm)
+            try:
+                sns.heatmap(pivot_conf, annot=True, fmt=".1f", cmap="RdYlGn", vmin=50, vmax=100, linewidths=0.5, ax=ax_hm)
+                ax_hm.set_title("Confiança do OCR (%) por Tipo de Doc")
+                st.pyplot(fig_hm)
+            finally:
+                plt.close(fig_hm)
 
 # ==========================================
 # PÁGINA 3: INADIMPLÊNCIA
@@ -546,44 +527,52 @@ elif menu == "3. Inadimplência":
     st.markdown("---")
 
     fig_def, axes_def = plt.subplots(1, 2, figsize=(13, 5))
+    try:
+        contagem = df["default_12m"].value_counts().sort_index()
+        axes_def[0].pie(contagem.values, labels=["Adimplente", "Inadimplente"], colors=["#4caf50", "#f44336"], autopct="%1.1f%%")
+        axes_def[0].set_title("Proporção Geral")
 
-    contagem = df["default_12m"].value_counts().sort_index()
-    axes_def[0].pie(contagem.values, labels=["Adimplente", "Inadimplente"], colors=["#4caf50", "#f44336"], autopct="%1.1f%%")
-    axes_def[0].set_title("Proporção Geral")
+        if "regiao" in df.columns:
+            def_regiao = df.groupby("regiao")["default_12m"].mean() * 100
+            def_regiao = def_regiao.sort_values(ascending=False)
+            cores_bar = ["#f44336" if v >= taxa_geral else "#ef9a9a" for v in def_regiao.values]
+            axes_def[1].bar(def_regiao.index, def_regiao.values, color=cores_bar)
+            axes_def[1].axhline(y=taxa_geral, color="gray", linestyle="--", label=f"Média: {taxa_geral:.1f}%")
+            axes_def[1].set_title("Inadimplência por Região (%)")
+            axes_def[1].legend()
 
-    if "regiao" in df.columns:
-        def_regiao = df.groupby("regiao")["default_12m"].mean() * 100
-        def_regiao = def_regiao.sort_values(ascending=False)
-        cores_bar = ["#f44336" if v >= taxa_geral else "#ef9a9a" for v in def_regiao.values]
-        axes_def[1].bar(def_regiao.index, def_regiao.values, color=cores_bar)
-        axes_def[1].axhline(y=taxa_geral, color="gray", linestyle="--", label=f"Média: {taxa_geral:.1f}%")
-        axes_def[1].set_title("Inadimplência por Região (%)")
-        axes_def[1].legend()
-
-    plt.tight_layout()
-    st.pyplot(fig_def)
-    plt.close(fig_def)
+        plt.tight_layout()
+        st.pyplot(fig_def)
+    finally:
+        plt.close(fig_def)
 
     st.subheader("Inadimplência por Faixa de LTV")
-    df["ltv_faixa"] = pd.cut(df["ltv"], bins=[0, 0.5, 1.0, 1.5, 2.0, 100], labels=["0–50%", "50–100%", "100–150%", "150–200%", ">200%"])
-    ltv_default = df.groupby("ltv_faixa", observed=True).agg(default_rate=("default_12m", "mean"), total=("default_12m", "count")).reset_index()
+    # FIX: ltv_faixa is now pre-computed in load_data(); no mutation here
+    ltv_default = df.groupby("ltv_faixa", observed=True).agg(
+        default_rate=("default_12m", "mean"),
+        total=("default_12m", "count")
+    ).reset_index()
 
     fig_ltv, ax_ltv = plt.subplots(figsize=(10, 4))
-    sns.barplot(data=ltv_default, x="ltv_faixa", y=ltv_default["default_rate"]*100, hue="ltv_faixa", palette="RdYlGn_r", legend=False, ax=ax_ltv)
-    ax_ltv.axhline(y=taxa_geral, color="gray", linestyle="--", label="Média Geral")
-    ax_ltv.set_title("Taxa de Inadimplência por LTV (Loan-to-Value)")
-    ax_ltv.set_ylabel("% Inadimplência")
-    ax_ltv.legend()
-    st.pyplot(fig_ltv)
-    plt.close(fig_ltv)
+    try:
+        sns.barplot(data=ltv_default, x="ltv_faixa", y=ltv_default["default_rate"]*100, hue="ltv_faixa", palette="RdYlGn_r", legend=False, ax=ax_ltv)
+        ax_ltv.axhline(y=taxa_geral, color="gray", linestyle="--", label="Média Geral")
+        ax_ltv.set_title("Taxa de Inadimplência por LTV (Loan-to-Value)")
+        ax_ltv.set_ylabel("% Inadimplência")
+        ax_ltv.legend()
+        st.pyplot(fig_ltv)
+    finally:
+        plt.close(fig_ltv)
 
     if "industry_sector" in df.columns:
         st.subheader("Inadimplência: Segmento x Setor")
         pivot_setor = (df.groupby(["customer_segment", "industry_sector"], observed=True)["default_12m"].mean().unstack() * 100)
         fig_hs, ax_hs = plt.subplots(figsize=(12, 5))
-        sns.heatmap(pivot_setor, annot=True, fmt=".1f", cmap="RdYlGn_r", linewidths=0.5, ax=ax_hs)
-        st.pyplot(fig_hs)
-        plt.close(fig_hs)
+        try:
+            sns.heatmap(pivot_setor, annot=True, fmt=".1f", cmap="RdYlGn_r", linewidths=0.5, ax=ax_hs)
+            st.pyplot(fig_hs)
+        finally:
+            plt.close(fig_hs)  # FIX: was missing in original
 
 # ==========================================
 # PÁGINA 4: RISCO DE FRAUDE
@@ -592,7 +581,6 @@ elif menu == "4. Risco de Fraude":
     st.title("🚨 Análise e Scoring de Risco de Fraude")
 
     COR_BAIXO, COR_MEDIO, COR_ALTO = "#4caf50", "#ff9800", "#f44336"
-    CORES_RISCO = [COR_BAIXO, COR_MEDIO, COR_ALTO]
 
     st.markdown("""
     **Metodologia do Score:** O sistema calcula o risco somando violações operacionais, anomalias de OCR, documentação em idiomas estrangeiros sem dados sensíveis associados e outros indicadores suspeitos (0 a 8 pontos).
@@ -615,21 +603,25 @@ elif menu == "4. Risco de Fraude":
 
         freq = df[sinais_validos].mean().sort_values(ascending=True) * 100
         fig_sinais, ax_sin = plt.subplots(figsize=(8, 5))
-        ax_sin.barh(freq.index, freq.values, color="#e57373")
-        ax_sin.set_title("Frequência de Sinais de Alerta (%)")
-        st.pyplot(fig_sinais)
-        plt.close(fig_sinais)
+        try:
+            ax_sin.barh(freq.index, freq.values, color="#e57373")
+            ax_sin.set_title("Frequência de Sinais de Alerta (%)")
+            st.pyplot(fig_sinais)
+        finally:
+            plt.close(fig_sinais)
 
     with col_chart2:
         score_segmento = df.groupby("customer_segment", observed=True)["fraude_score"].mean().sort_values(ascending=False)
         fig_seg, ax_seg = plt.subplots(figsize=(8, 5))
-        cores_seg = [COR_ALTO if v >= 2.5 else COR_MEDIO if v >= 2.0 else COR_BAIXO for v in score_segmento.values]
-        ax_seg.bar(score_segmento.index, score_segmento.values, color=cores_seg)
-        ax_seg.set_title("Score Médio de Fraude por Segmento")
-        ax_seg.tick_params(axis='x', rotation=30)
-        ax_seg.axhline(y=score_segmento.mean(), color="gray", linestyle="--")
-        st.pyplot(fig_seg)
-        plt.close(fig_seg)
+        try:
+            cores_seg = [COR_ALTO if v >= 2.5 else COR_MEDIO if v >= 2.0 else COR_BAIXO for v in score_segmento.values]
+            ax_seg.bar(score_segmento.index, score_segmento.values, color=cores_seg)
+            ax_seg.set_title("Score Médio de Fraude por Segmento")
+            ax_seg.tick_params(axis='x', rotation=30)
+            ax_seg.axhline(y=score_segmento.mean(), color="gray", linestyle="--")
+            st.pyplot(fig_seg)
+        finally:
+            plt.close(fig_seg)
 
     st.subheader("📋 Amostra de Casos de Alto Risco para Investigação")
     casos_alto_risco = df[df["fraude_risco"] == "ALTO"].sort_values("fraude_score", ascending=False).head(50)
@@ -643,8 +635,6 @@ elif menu == "4. Risco de Fraude":
 # PÁGINA 5: PROBLEMA PROPOSTA - PILARES
 # ==========================================
 elif menu == "5. Problema proposta - pilares":
-    import plotly.express as px # Importação local ou no topo do arquivo
-
     st.title("🏛️ Análise dos Pilares de Risco (Problema Proposto)")
 
     st.markdown("""
@@ -652,22 +642,18 @@ elif menu == "5. Problema proposta - pilares":
     O objetivo é identificar onde as falhas de processo ou riscos externos geram os maiores desvios em relação à média.
     """)
 
-    # --- Cálculos Base ---
     baseline_default = df['default_12m'].mean()
 
-    # 1. OCR e Qualidade de Imagem
     cat1_mask = (df['document_image_quality'] <= df['document_image_quality'].quantile(0.25)) | \
                 (df['ocr_error_count'] >= df['ocr_error_count'].quantile(0.75)) | \
                 (df['ocr_confidence'] <= df['ocr_confidence'].quantile(0.25))
     cat1_default = df[cat1_mask]['default_12m'].mean()
 
-    # 2. Divergência e Qualidade de Dados
     cat2_mask = (df['data_quality_score'] <= df['data_quality_score'].quantile(0.25)) | \
                 (df['rule_violations'] >= df['rule_violations'].quantile(0.75)) | \
                 (df['join_status'] != 'FULL_MATCH')
     cat2_default = df[cat2_mask]['default_12m'].mean()
 
-    # 3. Risco Ambiental
     cat3_cols = ['deforestation_km2_12m', 'flood_risk_idx']
     if all(col in df.columns for col in cat3_cols):
         cat3_mask = (df['climate_alert_level'] == 'ALTO') | \
@@ -677,12 +663,10 @@ elif menu == "5. Problema proposta - pilares":
     else:
         cat3_default = 0
 
-    # 4. Formatos Não Padronizados
     cat4_mask = (df['source_system'].isin(['MOBILE_PHOTO', 'EMAIL_ATTACH'])) | \
                 (df['compliance_status'] == 'REVIEW')
     cat4_default = df[cat4_mask]['default_12m'].mean()
 
-    # --- Métricas de Destaque ---
     st.markdown("---")
     col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
 
@@ -692,7 +676,6 @@ elif menu == "5. Problema proposta - pilares":
     col_m4.metric("Pilar Ambiental", f"{cat3_default*100:.2f}%", f"{(cat3_default-baseline_default)*100:.2f}%", delta_color="inverse")
     col_m5.metric("Pilar Formatos", f"{cat4_default*100:.2f}%", f"{(cat4_default-baseline_default)*100:.2f}%", delta_color="inverse")
 
-    # --- Gráfico Comparativo de Pilares (Executivo) ---
     st.subheader("📊 Comparativo de Inadimplência por Pilar")
 
     df_pilares = pd.DataFrame({
@@ -709,21 +692,23 @@ elif menu == "5. Problema proposta - pilares":
     }).sort_values("Taxa de Default (%)", ascending=False).reset_index(drop=True)
 
     fig_pil, ax_pil = plt.subplots(figsize=(12, 6))
-    cores = ["#9e9e9e" if "Baseline" in pilar else "#d32f2f" for pilar in df_pilares["Pilar de Risco"]]
-    sns.barplot(data=df_pilares, x="Taxa de Default (%)", y="Pilar de Risco", palette=cores, ax=ax_pil)
+    try:
+        cores = ["#9e9e9e" if "Baseline" in pilar else "#d32f2f" for pilar in df_pilares["Pilar de Risco"]]
+        sns.barplot(data=df_pilares, x="Taxa de Default (%)", y="Pilar de Risco", palette=cores, ax=ax_pil)
 
-    for p in ax_pil.patches:
-        width = p.get_width()
-        if pd.notna(width) and width > 0:
-            ax_pil.text(width + 0.05, p.get_y() + p.get_height() / 2, f"{width:.2f}%", va="center", fontsize=11, fontweight="bold")
+        for p in ax_pil.patches:
+            width = p.get_width()
+            if pd.notna(width) and width > 0:
+                ax_pil.text(width + 0.05, p.get_y() + p.get_height() / 2, f"{width:.2f}%", va="center", fontsize=11, fontweight="bold")
 
-    ax_pil.axvline(x=baseline_default * 100, color="#616161", linestyle="--", alpha=0.8, label="Média Base")
-    ax_pil.set_xlim(16.0, 17.5)
-    ax_pil.set_title("Impacto na Inadimplência: Piores Cenários vs. Média Geral", fontsize=14, fontweight="bold")
-    sns.despine(left=True, bottom=True)
-    st.pyplot(fig_pil)
+        ax_pil.axvline(x=baseline_default * 100, color="#616161", linestyle="--", alpha=0.8, label="Média Base")
+        ax_pil.set_xlim(16.0, 17.5)
+        ax_pil.set_title("Impacto na Inadimplência: Piores Cenários vs. Média Geral", fontsize=14, fontweight="bold")
+        sns.despine(left=True, bottom=True)
+        st.pyplot(fig_pil)
+    finally:
+        plt.close(fig_pil)  # FIX: was missing in original
 
-    # --- Tabela de Correlações ---
     st.markdown("---")
     st.subheader("🔗 Intensidade da Correlação com a Inadimplência")
     cols_groups = {
@@ -743,20 +728,22 @@ elif menu == "5. Problema proposta - pilares":
         df_corr_final = pd.DataFrame(res_corr)
         st.dataframe(df_corr_final.style.background_gradient(cmap="Reds"), use_container_width=True, hide_index=True)
 
-    # --- NOVO GRÁFICO: IMPORTÂNCIA DE VARIÁVEIS (PLOTLY) ---
     st.markdown("---")
     st.subheader("💡 Importância de Variáveis")
-    # TODO tirar o hardcore e calcular as colunas e seus valores
+    # TODO: replace hardcoded values with computed feature importances
     features = ['Renda', 'LTV', 'Risco Ambiental', 'Score OCR', 'Match de PII']
     imp = [0.28, 0.22, 0.18, 0.17, 0.15]
 
-    fig_imp = plotly.express.bar(x=imp, y=features, orientation='h',
-                        title="<b>O que mais impacta a Inadimplência?</b>",
-                        labels={'x': 'Peso no Modelo', 'y': 'Variável'},
-                        color_discrete_sequence=['#3498db'])
-
-    fig_imp.update_layout(yaxis={'categoryorder':'total ascending'},
-                          plot_bgcolor='rgba(0,0,0,0)',
-                          margin=dict(l=20, r=20, t=40, b=20))
-
+    fig_imp = px.bar(
+        x=imp, y=features, orientation='h',
+        title="<b>O que mais impacta a Inadimplência?</b>",
+        labels={'x': 'Peso no Modelo', 'y': 'Variável'},
+        color_discrete_sequence=['#3498db']
+    )
+    fig_imp.update_layout(
+        yaxis={'categoryorder': 'total ascending'},
+        plot_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=20, r=20, t=40, b=20)
+    )
     st.plotly_chart(fig_imp, use_container_width=True)
+    # NOTE: Plotly figures are garbage-collected automatically; no manual close needed.
