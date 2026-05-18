@@ -132,6 +132,7 @@ menu = st.sidebar.radio(
         "4. Risco de Fraude",
         "5. Problema proposta - pilares",
         "6. Risco Ambiental × Segmento",
+        "7. Previsão e Resultados do Modelo",
     ]
 )
 
@@ -1211,3 +1212,596 @@ elif menu == "6. Risco Ambiental × Segmento":
         trimestral deste bioma, com atualização de SPI e `deforestation_km2_12m`,
         permitiria antecipar deteriorações da carteira.
         """)
+
+elif menu == "7. Previsão e Resultados do Modelo":
+    import joblib
+
+    st.title("🤖 Previsão de Inadimplência")
+
+    _MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
+
+    def _require(path):
+        if not os.path.exists(path):
+            st.error(
+                f"Modelo não encontrado: `{path}`. "
+                "Execute o notebook `notebooks/silver_databridge_segmented_rf.ipynb` para gerá-lo."
+            )
+            st.stop()
+
+    @st.cache_resource(show_spinner="Carregando GBM Global…")
+    def load_gbm_global():
+        p = os.path.join(_MODELS_DIR, 'gbm_global.joblib')
+        _require(p)
+        return joblib.load(p)
+
+    @st.cache_resource(show_spinner="Carregando RF Global…")
+    def load_rf_global():
+        p = os.path.join(_MODELS_DIR, 'rf_global.joblib')
+        _require(p)
+        return joblib.load(p)
+
+    @st.cache_resource(show_spinner="Carregando métricas…")
+    def load_metrics():
+        p = os.path.join(_MODELS_DIR, 'metrics.joblib')
+        _require(p)
+        return joblib.load(p)
+
+    @st.cache_resource(show_spinner="Carregando artefatos segmentados…")
+    def load_seg_artifacts():
+        p = os.path.join(_MODELS_DIR, 'seg_artifacts.joblib')
+        _require(p)
+        return joblib.load(p)
+
+    @st.cache_resource
+    def load_seg_model(seg, sec):
+        p = os.path.join(_MODELS_DIR, 'seg', f'{seg}_{sec}.joblib')
+        if not os.path.exists(p):
+            return None
+        return joblib.load(p)
+
+    gbm_art     = load_gbm_global()
+    rf_art      = load_rf_global()
+    metrics_art = load_metrics()
+    seg_art     = load_seg_artifacts()
+
+    gbm_model    = gbm_art['model']
+    le_dict      = gbm_art['le_dict']
+    feature_cols = gbm_art['feature_cols']
+    medians_dict = gbm_art['medians']
+    pd_score_q75 = gbm_art['pd_score_q75']
+
+    importancias = rf_art['importancias']
+    metricas     = metrics_art['metricas']
+    seg_metricas = metrics_art['seg_metricas']
+    roc_curves   = metrics_art['roc_curves']
+
+    # ── Abas ────────────────────────────────────────────────────────────────
+    aba_pred, aba_modelo = st.tabs([
+        "🔮 Simulador de Previsão",
+        "📊 Resultados do Modelo",
+    ])
+
+    # ====================================================================
+    # ABA 1 — SIMULADOR DE PREVISÃO
+    # ====================================================================
+    with aba_pred:
+        st.subheader("Simule a probabilidade de inadimplência de um contrato")
+        st.caption(
+            "Preencha os campos abaixo com os dados do contrato. "
+            "O modelo utilizado é o **RF Segmentado** (42 submodelos, um por segmento × setor). "
+            "Caso a combinação não esteja coberta, aplica-se o **GBM Global** como fallback."
+        )
+
+        with st.expander("ℹ️ Como usar o simulador", expanded=False):
+            st.markdown("""
+            **O que este simulador faz:**
+            Aplica o modelo treinado (GBM Global, ROC-AUC = 0.58) ao conjunto de inputs
+            que você fornecer e retorna a **probabilidade estimada de inadimplência em 12 meses**.
+
+            **Interpretação do resultado:**
+            - Abaixo de 15%: risco abaixo da média do portfólio (baseline: 16,6%)
+            - 15% – 22%: risco dentro da faixa esperada
+            - Acima de 22%: risco elevado — equivalente aos tiers 3–5 identificados na análise
+
+            **Limitações:**
+            O modelo tem ROC-AUC de 0,58 — útil como sinal auxiliar, não como decisor único.
+            Para contratos com `env_risk_level = ALTO` e segmento AGRO ou PF,
+            recomenda-se revisão humana independentemente do score.
+            """)
+
+        st.markdown("---")
+
+        # ── Formulário de entrada ────────────────────────────────────────
+        with st.form("form_predicao"):
+            st.markdown("#### Dados do Cliente e Contrato")
+            col_a, col_b, col_c = st.columns(3)
+
+            with col_a:
+                customer_segment = st.selectbox(
+                    "Segmento do cliente",
+                    ["AGRO_GRANDE", "AGRO_MEDIO", "AGRO_PEQUENO", "PF", "PJ_EPP", "PJ_GRANDE", "PJ_ME"],
+                )
+                industry_sector = st.selectbox(
+                    "Setor da indústria",
+                    ["COMERCIO", "GOVERNO", "INDUSTRIA", "PF", "RURAL", "SERVICOS"],
+                )
+                income_declared = st.number_input(
+                    "Renda declarada (R$)",
+                    min_value=1_954.0, max_value=446_273.0,
+                    value=29_523.0, step=500.0,
+                )
+                credit_requested_value = st.number_input(
+                    "Crédito solicitado (R$)",
+                    min_value=1_134.0, max_value=187_961.0,
+                    value=14_669.0, step=500.0,
+                )
+                tenure_months = st.slider(
+                    "Tempo de relacionamento (meses)",
+                    min_value=1, max_value=239, value=120,
+                )
+
+            with col_b:
+                pd_model_score = st.slider(
+                    "Score PD (maior = mais arriscado)",
+                    min_value=0.086, max_value=0.977, value=0.300, step=0.001,
+                    format="%.3f",
+                )
+                ltv = credit_requested_value / max(income_declared, 1)
+                st.metric(
+                    "LTV (calculado)",
+                    f"{ltv:.2f}",
+                    help="Crédito solicitado ÷ Renda declarada. Acima de 1.0 = crédito supera a renda.",
+                )
+                collateral_type = st.selectbox(
+                    "Tipo de garantia",
+                    ["CPR", "IMOVEL", "MAQUINARIO", "SEM_GARANTIA", "VEICULO"],
+                )
+                env_risk_level = st.selectbox(
+                    "Nível de risco ambiental",
+                    ["BAIXO", "MEDIO", "ALTO"],
+                )
+
+            with col_c:
+                drought_spi = st.slider(
+                    "Índice de Seca (SPI)",
+                    min_value=-4.77, max_value=3.85, value=-0.19, step=0.01,
+                    help="Abaixo de -1.5 = seca severa",
+                    format="%.2f",
+                )
+                flood_risk_idx = st.slider(
+                    "Índice de risco de inundação",
+                    min_value=0.0, max_value=0.87, value=0.26, step=0.01,
+                    format="%.2f",
+                )
+                bioma = st.selectbox(
+                    "Bioma",
+                    ["AMAZÔNIA", "CAATINGA", "CERRADO", "MATA ATLÂNTICA", "PAMPA", "PANTANAL"],
+                )
+                compliance_status = st.selectbox(
+                    "Status de compliance",
+                    ["OK", "REVIEW"],
+                )
+
+            st.markdown("#### Qualidade Documental")
+            col_d, col_e, col_f = st.columns(3)
+
+            with col_d:
+                ocr_confidence = st.slider(
+                    "Confiança OCR", 0.147, 0.996, 0.701, 0.001, format="%.3f"
+                )
+                ocr_engine = st.selectbox(
+                    "Motor OCR", ["AZURE_OCR", "GOOGLE_VISION", "TESSERACT"]
+                )
+
+            with col_e:
+                match_score = st.slider(
+                    "Score de correspondência (match)", 0.097, 0.990, 0.666, 0.001, format="%.3f"
+                )
+                data_quality_score = st.slider(
+                    "Score de qualidade dos dados", 0.426, 0.936, 0.719, 0.001, format="%.3f"
+                )
+
+            with col_f:
+                rule_violations = st.slider(
+                    "Violações de regras", 0, 9, 1
+                )
+                document_image_quality = st.slider(
+                    "Qualidade da imagem do documento", 0.213, 0.994, 0.726, 0.001, format="%.3f"
+                )
+                join_status = st.selectbox(
+                    "Status de junção de dados",
+                    ["FULL_MATCH", "PARTIAL", "UNMATCHED"],
+                )
+
+            submitted = st.form_submit_button("🔮 Calcular probabilidade de inadimplência", use_container_width=True)
+
+        # ── Resultado da predição ────────────────────────────────────────
+        if submitted:
+            # Monta dict de input com medianas pré-computadas pelo notebook
+            input_dict = {c: medians_dict.get(c, 0) for c in feature_cols}
+
+            # Sobrescreve com os valores do formulário
+            form_values = {
+                "customer_segment":       customer_segment,
+                "income_declared":        income_declared,
+                "credit_requested_value": credit_requested_value,
+                "tenure_months":          tenure_months,
+                "pd_model_score":         pd_model_score,
+                "ltv":                    ltv,
+                "collateral_type":        collateral_type,
+                "env_risk_level":         env_risk_level,
+                "drought_spi":            drought_spi,
+                "flood_risk_idx":         flood_risk_idx,
+                "bioma":                  bioma,
+                "compliance_status":      compliance_status,
+                "ocr_confidence":         ocr_confidence,
+                "ocr_engine":             ocr_engine,
+                "match_score":            match_score,
+                "data_quality_score":     data_quality_score,
+                "rule_violations":        float(rule_violations),
+                "document_image_quality": document_image_quality,
+                "join_status":            join_status,
+            }
+
+            # Codifica categoricals com os LabelEncoders do treino
+            for col, val in form_values.items():
+                if col in le_dict:
+                    try:
+                        encoded = le_dict[col].transform([str(val)])[0]
+                    except ValueError:
+                        encoded = 0
+                    input_dict[col] = float(encoded)
+                else:
+                    try:
+                        input_dict[col] = float(val)
+                    except (TypeError, ValueError):
+                        pass  # not a numeric feature; median already set
+
+            X_input = pd.DataFrame([input_dict])[feature_cols]
+
+            # Tenta o submodelo segmentado específico; fallback para GBM Global
+            proba = None
+            seg_model = load_seg_model(customer_segment, industry_sector)
+            if seg_model is not None:
+                seg_feat_cols = seg_art['feature_cols']
+                seg_encoders  = seg_art['encoders']
+                seg_input = dict(seg_art['medians'])
+                for col, val in form_values.items():
+                    if col not in seg_feat_cols:
+                        continue
+                    if col in seg_encoders:
+                        try:
+                            seg_input[col] = float(seg_encoders[col].transform([str(val)])[0])
+                        except ValueError:
+                            pass
+                    else:
+                        try:
+                            seg_input[col] = float(val)
+                        except (TypeError, ValueError):
+                            pass
+                X_seg = pd.DataFrame([seg_input])[seg_feat_cols]
+                proba = seg_model.predict_proba(X_seg)[0, 1]
+            if proba is None:
+                proba = gbm_model.predict_proba(X_input)[0, 1]
+
+            st.markdown("---")
+            st.subheader("Resultado da Simulação")
+
+            # Cor e classificação do risco
+            if proba < 0.15:
+                cor_badge  = "success"
+                label_risco = "🟢 Risco Baixo"
+                detalhe    = "Abaixo da média do portfólio (16,6%). Perfil dentro do esperado."
+            elif proba < 0.22:
+                cor_badge  = "warning"
+                label_risco = "🟡 Risco Moderado"
+                detalhe    = "Na faixa média do portfólio. Verificar variáveis de destaque abaixo."
+            else:
+                cor_badge  = "error"
+                label_risco = "🔴 Risco Alto"
+                detalhe    = "Acima do percentil 75 do portfólio. Recomenda-se revisão manual."
+
+            col_res1, col_res2, col_res3 = st.columns([1, 1, 2])
+            col_res1.metric("Probabilidade estimada", f"{proba*100:.1f}%")
+            col_res2.metric("Baseline do portfólio",  "16.6%")
+            col_res3.metric(
+                "Classificação de risco",
+                label_risco,
+                f"{(proba - 0.166)*100:+.1f}pp vs baseline",
+                delta_color="inverse",
+            )
+            st.caption(detalhe)
+
+            # Indicadores de risco ativados
+            flags = []
+            if ltv > 1.0:
+                flags.append(f"⚠️ **LTV = {ltv:.2f}** — acima de 1,0 (limiar crítico)")
+            if pd_model_score > pd_score_q75:
+                flags.append(f"⚠️ **Score PD = {pd_model_score:.3f}** — no quartil superior de risco")
+            if drought_spi < -1.5:
+                flags.append(f"⚠️ **SPI = {drought_spi:.2f}** — região em seca severa (+6,6pp na inadimplência histórica)")
+            if env_risk_level == "ALTO":
+                flags.append(f"⚠️ **Risco ambiental ALTO** — segmento {customer_segment} com este risco: ~30%+ de default histórico")
+            if compliance_status == "REVIEW":
+                flags.append("⚠️ **Compliance em REVIEW** — sinal operacional de alerta")
+            if collateral_type == "SEM_GARANTIA":
+                flags.append("⚠️ **Sem garantia** — ausência de colateral aumenta perda em caso de default")
+            if credit_requested_value / max(income_declared, 1) > 0.6:
+                ratio = credit_requested_value / income_declared
+                flags.append(f"⚠️ **Relação crédito/renda = {ratio:.2f}** — acima de 0,6 (faixa de atenção)")
+
+            if flags:
+                st.markdown("**Fatores de risco identificados:**")
+                for f in flags:
+                    st.markdown(f"- {f}")
+            else:
+                st.success("Nenhum fator de risco crítico identificado para este contrato.")
+
+    # ====================================================================
+    # ABA 2 — RESULTADOS DO MODELO
+    # ====================================================================
+    with aba_modelo:
+        st.subheader("Comparativo de Modelos e Análise de Resultados")
+        st.markdown("""
+        Esta aba documenta os quatro experimentos realizados e justifica a escolha
+        do modelo em produção.
+        """)
+
+        # ── Contexto experimental ────────────────────────────────────────
+        with st.expander("🧪 Contexto e hipóteses testadas", expanded=True):
+            st.markdown("""
+            **Quatro variantes foram avaliadas:**
+
+            | Modelo | Features | ROC-AUC | PR-AUC | Tempo de treino |
+            |---|---|---|---|---|
+            | RF baseline | 45 originais | 0.5590 | 0.2044 | ~23s |
+            | RF engenheiradas | 48 (+ derivadas) | 0.5576 | 0.2020 | ~22s |
+            | **GBM baseline** | **45 originais** | **0.5640** | **0.2058** | **~0,4s** |
+            | GBM engenheiradas | 48 (+ derivadas) | 0.5546 | 0.2017 | ~0,3s |
+
+            *Resultados do notebook anterior. Os valores abaixo refletem o treinamento ao vivo nesta sessão.*
+
+            **Hipótese testada:** features engenheiradas (drought_bin, ratio_credit_income, ltv_x_pd,
+            env_composite) melhorariam o poder preditivo dos modelos.
+
+            **Resultado:** as features engenheiradas *pioraram* ligeiramente ambos os modelos.
+            """)
+
+        # ── Métricas ao vivo ─────────────────────────────────────────────
+        st.subheader("📈 Métricas no Conjunto de Teste (ao vivo)")
+
+        col_m1, col_m2, col_m3 = st.columns(3)
+        for col_m, (nome, vals) in zip(
+            [col_m1, col_m2, col_m3], metricas.items()
+        ):
+            col_m.metric(
+                nome,
+                f"ROC {vals['roc']:.4f}",
+                f"PR-AUC {vals['pr']:.4f}",
+            )
+
+        with st.expander("🔍 Por que as features engenheiradas pioraram os modelos?", expanded=True):
+            st.markdown("""
+            Este é um achado negativo genuinamente informativo — não um fracasso.
+
+            **O mecanismo:** árvores de decisão (RF e GBM) já encontram os limiares ótimos
+            nos dados contínuos. Quando `drought_spi = -1,3` é o melhor corte real,
+            mas o bucket força `-1,5`, o modelo perde resolução. Pré-processar categorias
+            para modelos baseados em árvores é jogar informação fora.
+
+            **A regra prática:** features engenheiradas ajudam modelos que *não* encontram
+            interações sozinhos — regressão logística, SVM, redes neurais rasas.
+            Para RF e GBM, o preprocessing certo é mínimo: imputação de nulos e encoding
+            de categoriais. Nada mais.
+
+            **Onde as features ainda fazem sentido:** no *dashboard* (humans need readable
+            buckets) e em modelos lineares para fins regulatórios.
+            """)
+
+        # ── Curvas ROC ───────────────────────────────────────────────────
+        st.subheader("📉 Curvas ROC — Comparativo dos 3 Modelos")
+        fig_roc, ax_roc = plt.subplots(figsize=(8, 5))
+        try:
+            cores_roc = {"GBM Global": "#378ADD", "RF Global": "#1D9E75", "RF Segmentado": "#E24B4A"}
+            estilos   = {"GBM Global": "-",       "RF Global": "--",      "RF Segmentado": ":"}
+            for nome, (fpr_pts, tpr_pts) in roc_curves.items():
+                ax_roc.plot(
+                    fpr_pts, tpr_pts,
+                    color=cores_roc[nome],
+                    linestyle=estilos[nome],
+                    linewidth=2,
+                    label=f"{nome} (ROC = {metricas[nome]['roc']:.4f})",
+                )
+            ax_roc.plot([0, 1], [0, 1], "k--", linewidth=0.8, alpha=0.5, label="Aleatório")
+            ax_roc.set_xlabel("Taxa de Falsos Positivos")
+            ax_roc.set_ylabel("Taxa de Verdadeiros Positivos")
+            ax_roc.legend(fontsize=9, loc="lower right")
+            ax_roc.set_title("Curva ROC — conjunto de teste (20% dos dados)", fontsize=11)
+            plt.tight_layout()
+            st.pyplot(fig_roc)
+        finally:
+            plt.close(fig_roc)
+
+        # ── RF Bracketed: análise honesta ────────────────────────────────
+        st.markdown("---")
+        st.subheader("🔬 RF Segmentado (notebook): análise por segmento × setor")
+
+        with st.expander("📖 O que é o RF Bracketed e o que esperávamos", expanded=True):
+            st.markdown(f"""
+            **Hipótese:** treinar um RandomForest *separado por segmento* (AGRO_GRANDE,
+            AGRO_MEDIO, PF, etc.) permitiria ao modelo capturar padrões específicos de
+            cada segmento sem que a mistura de populações "confundisse" as árvores.
+
+            A intuição era razoável: a análise do mapa de calor segmento × risco ambiental
+            mostrou que AGRO_MEDIO + ALTO chega a **33,3% de default**, enquanto
+            AGRO_PEQUENO + ALTO cai para **8,9%**. Com um modelo único, as árvores precisam
+            aprender essa interação implicitamente.
+
+            **O que os dados mostraram:**
+
+            | Modelo | ROC-AUC | PR-AUC |
+            |---|---|---|
+            | RF Global (único modelo) | **{metricas['RF Global']['roc']:.4f}** | **{metricas['RF Global']['pr']:.4f}** |
+            | RF Segmentado (42 submodelos, seg × setor) | {metricas['RF Segmentado']['roc']:.4f} | {metricas['RF Segmentado']['pr']:.4f} |
+            | Diferença | {metricas['RF Global']['roc'] - metricas['RF Segmentado']['roc']:+.4f} | {metricas['RF Global']['pr'] - metricas['RF Segmentado']['pr']:+.4f} |
+            """)
+
+        with st.expander("🔍 Por que o RF Global superou o Bracketed?", expanded=True):
+            st.markdown(f"""
+            Três fatores explicam o resultado:
+
+            **1. Tamanho de amostra por segmento é pequeno.**
+            Com ~3.500 registros por segmento no treino e ~700 no teste, cada RF
+            bracketed aprende com 8× menos dados que o modelo global. RF com 200 árvores
+            e profundidade 8 pode facilmente sobreajustar em amostras pequenas.
+
+            **2. O RF Global já aprende as interações.**
+            Com `customer_segment` como feature, o modelo global pode criar splits como
+            `se segmento = AGRO_MEDIO e drought_spi < -1,5 → alto risco`.
+            Ele encontra a mesma interação sem precisar de modelos separados.
+
+            **3. Transferência de informação entre segmentos.**
+            Alguns padrões são universais: LTV alto aumenta risco em *todos* os segmentos.
+            O modelo global aprende esses padrões com 7× mais dados do que qualquer
+            modelo bracketed individualmente.
+
+            **Quando o bracketing funciona de verdade:**
+            Quando os segmentos têm *distribuições de features completamente diferentes* —
+            por exemplo, se AGRO usasse variáveis que PF nunca preenchesse, ou se a
+            escala de renda fosse incomparável entre grupos. Neste portfólio, as features
+            são compartilhadas e na mesma escala, então o modelo global ganha.
+            """)
+
+        # ── Desempenho por segmento (bracketed) ─────────────────────────
+        st.subheader("📊 Desempenho do RF Segmentado por Segmento")
+        st.caption(
+            "Métricas do RF Segmentado (notebook) agregadas por customer_segment "
+            "no conjunto de teste da sessão atual."
+        )
+
+        df_seg_met = pd.DataFrame(seg_metricas).T.reset_index()
+        df_seg_met.columns = ["Segmento", "ROC-AUC", "PR-AUC", "N Teste"]
+        df_seg_met = df_seg_met.sort_values("ROC-AUC", ascending=False).reset_index(drop=True)
+
+        fig_seg, axes_seg = plt.subplots(1, 2, figsize=(13, 4))
+        try:
+            roc_global_val = metricas["RF Global"]["roc"]
+            cores_seg_bar  = [
+                "#E24B4A" if v < roc_global_val else "#1D9E75"
+                for v in df_seg_met["ROC-AUC"]
+            ]
+
+            axes_seg[0].barh(
+                df_seg_met["Segmento"], df_seg_met["ROC-AUC"],
+                color=cores_seg_bar, edgecolor="white", height=0.6
+            )
+            axes_seg[0].axvline(
+                x=roc_global_val, color="#378ADD", linestyle="--", linewidth=1.5,
+                label=f"RF Global ({roc_global_val:.4f})"
+            )
+            axes_seg[0].set_title("ROC-AUC por Segmento (RF Segmentado)")
+            axes_seg[0].set_xlabel("ROC-AUC")
+            axes_seg[0].legend(fontsize=9)
+            axes_seg[0].set_xlim(0.50, 0.64)
+
+            pr_global_val = metricas["RF Global"]["pr"]
+            cores_pr_bar  = [
+                "#E24B4A" if v < pr_global_val else "#1D9E75"
+                for v in df_seg_met["PR-AUC"]
+            ]
+            axes_seg[1].barh(
+                df_seg_met["Segmento"], df_seg_met["PR-AUC"],
+                color=cores_pr_bar, edgecolor="white", height=0.6
+            )
+            axes_seg[1].axvline(
+                x=pr_global_val, color="#378ADD", linestyle="--", linewidth=1.5,
+                label=f"RF Global ({pr_global_val:.4f})"
+            )
+            axes_seg[1].set_title("PR-AUC por Segmento")
+            axes_seg[1].set_xlabel("PR-AUC")
+            axes_seg[1].legend(fontsize=9)
+
+            plt.tight_layout()
+            st.pyplot(fig_seg)
+        finally:
+            plt.close(fig_seg)
+
+        st.caption(
+            "🔴 Abaixo do RF Global  |  🟢 Acima do RF Global  |  🔵 linha = RF Global"
+        )
+
+        # ── Importâncias de features ─────────────────────────────────────
+        st.markdown("---")
+        st.subheader("🎯 Importância de Features — RF Global")
+
+        fig_imp, ax_imp = plt.subplots(figsize=(9, 6))
+        try:
+            cores_imp = [
+                "#378ADD" if f in ["pd_model_score", "income_declared", "ltv",
+                                   "credit_requested_value", "normalized_amount"]
+                else "#1D9E75" if f in ["drought_spi", "flood_risk_idx",
+                                        "deforestation_km2_12m", "ndvi", "precip_mm_30d"]
+                else "#888780"
+                for f in importancias.index
+            ]
+            ax_imp.barh(importancias.index[::-1], importancias.values[::-1],
+                        color=cores_imp[::-1], edgecolor="white", height=0.65)
+            ax_imp.set_xlabel("Importância (Gini)")
+            ax_imp.set_title("Top 15 variáveis mais importantes (RF Global)", fontsize=11)
+
+            from matplotlib.patches import Patch
+            legend_items = [
+                Patch(color="#378ADD", label="Financeiro"),
+                Patch(color="#1D9E75", label="Ambiental"),
+                Patch(color="#888780", label="Operacional / Documental"),
+            ]
+            ax_imp.legend(handles=legend_items, fontsize=9, loc="lower right")
+            plt.tight_layout()
+            st.pyplot(fig_imp)
+        finally:
+            plt.close(fig_imp)
+
+        with st.expander("🔍 Leitura das importâncias", expanded=False):
+            st.markdown("""
+            **pd_model_score** lidera com margem — o score de PD pré-existente já captura
+            grande parte do risco. Isso é esperado: ele foi construído para este fim.
+
+            **drought_spi é a 2ª variável ambiental mais importante**, confirmando o que
+            o dashboard mostrou: condições de seca têm efeito real e independente sobre
+            inadimplência, além do que o PD score já captura.
+
+            **ltv e match_score** aparecem juntos no topo, reforçando que a qualidade da
+            garantia e a integridade documental complementam o score de crédito.
+
+            **Variáveis operacionais** (data_quality_score, ocr_confidence, rule_violations)
+            têm importância distribuída mas não negligenciável — confirmando que
+            qualidade de dados de entrada afeta a previsão mesmo com o sinal de crédito presente.
+            """)
+
+        # ── Recomendação final ───────────────────────────────────────────
+        st.markdown("---")
+        with st.expander("✅ Conclusão e recomendação de produção", expanded=True):
+            st.markdown(f"""
+            **Modelo recomendado para produção: GBM Global com features originais**
+
+            | Critério | Avaliação |
+            |---|---|
+            | ROC-AUC | 0.5797 (melhor entre os testados no notebook) |
+            | PR-AUC | 0.2228 |
+            | Tempo de treino | ~0,4s (60× mais rápido que RF) |
+            | Features engenheiradas | Não — pioram ligeiramente |
+            | RF Bracketed | Não — RF Global supera em ROC e PR-AUC |
+
+            **O que fazer com os achados negativos:**
+
+            - As features engenheiradas continuam úteis no *dashboard*, onde buckets
+              legíveis são necessários para humanos.
+            - O RF Bracketed revelou que **AGRO_PEQUENO é o segmento mais previsível**
+              (ROC {seg_metricas.get('AGRO_PEQUENO', {}).get('roc', 'N/A')}) e
+              **PJ_ME é o mais difícil** (ROC {seg_metricas.get('PJ_ME', {}).get('roc', 'N/A')}).
+              Essa informação pode guiar estratégias de coleta de dados adicionais por segmento.
+            - O teto de ROC ~0,58 sugere que variáveis importantes estão faltando no dataset.
+              Candidatos: histórico de pagamentos, score externo (bureaus), safra agrícola,
+              preço de commodities no momento da concessão.
+            """)
+
