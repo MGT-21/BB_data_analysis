@@ -1252,23 +1252,23 @@ elif menu == "7. Previsão e Resultados do Modelo":
                 )
                 income_declared = st.number_input(
                     "Renda declarada (R$)",
-                    min_value=1_954.0, max_value=446_273.0,
-                    value=29_523.0, step=500.0,
+                    min_value=1_620.0, max_value=450_000.0,
+                    value=4_000.0, step=1.0,
                 )
                 credit_requested_value = st.number_input(
                     "Crédito solicitado (R$)",
-                    min_value=1_134.0, max_value=187_961.0,
-                    value=14_669.0, step=500.0,
+                    min_value=100.0, max_value=200_000.0,
+                    value=10_000.0, step=1.0,
                 )
-                tenure_months = st.slider(
+                tenure_months = st.number_input(
                     "Tempo de relacionamento (meses)",
-                    min_value=1, max_value=239, value=120,
+                    min_value=1, max_value=3000, value=120, step=1,
                 )
 
             with col_b:
-                pd_model_score = st.slider(
+                pd_model_score = st.number_input(
                     "Score PD (maior = mais arriscado)",
-                    min_value=0.086, max_value=0.977, value=0.300, step=0.001,
+                    min_value=0.0, max_value=1.0, value=0.300, step=0.001,
                     format="%.3f",
                 )
                 ltv = credit_requested_value / max(income_declared, 1)
@@ -1281,57 +1281,98 @@ elif menu == "7. Previsão e Resultados do Modelo":
                     "Tipo de garantia",
                     ["CPR", "IMOVEL", "MAQUINARIO", "SEM_GARANTIA", "VEICULO"],
                 )
-                env_risk_level = st.selectbox(
-                    "Nível de risco ambiental",
-                    ["BAIXO", "MEDIO", "ALTO"],
-                )
 
             with col_c:
-                drought_spi = st.slider(
-                    "Índice de Seca (SPI)",
-                    min_value=-4.77, max_value=3.85, value=-0.19, step=0.01,
-                    help="Abaixo de -1.5 = seca severa",
-                    format="%.2f",
+                uf = st.selectbox(
+                    "UF",
+                    ['AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA',
+                     'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN',
+                     'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO'],
+                    index=13,
                 )
-                flood_risk_idx = st.slider(
-                    "Índice de risco de inundação",
-                    min_value=0.0, max_value=0.87, value=0.26, step=0.01,
-                    format="%.2f",
-                )
-                bioma = st.selectbox(
-                    "Bioma",
-                    ["AMAZÔNIA", "CAATINGA", "CERRADO", "MATA ATLÂNTICA", "PAMPA", "PANTANAL"],
+                regiao = st.selectbox(
+                    "Região",
+                    ['CO', 'N', 'NE', 'S', 'SE'],
+                    index=2,
                 )
                 compliance_status = st.selectbox(
                     "Status de compliance",
                     ["OK", "REVIEW"],
                 )
 
+            st.markdown("#### Dados Ambientais")
+            st.caption("Marque 'não disponível' para usar a mediana do conjunto de treino.")
+            col_env1, col_env2, col_env3, col_env4 = st.columns(4)
+
+            with col_env1:
+                drought_spi_na = st.checkbox("SPI não disponível", value=False)
+                drought_spi = st.number_input(
+                    "Índice de Seca (SPI)",
+                    min_value=-4.77, max_value=3.85, value=-0.20, step=0.01,
+                    format="%.2f",
+                    help="Abaixo de -1.5 = seca severa. Ignorado se marcado como não disponível.",
+                )
+
+            with col_env2:
+                flood_risk_idx_na = st.checkbox("Inundação não disponível", value=False)
+                flood_risk_idx = st.number_input(
+                    "Índice de risco de inundação",
+                    min_value=0.0, max_value=0.87, value=0.26, step=0.01,
+                    format="%.2f",
+                    help="Ignorado se marcado como não disponível.",
+                )
+
+            with col_env3:
+                env_risk_level_na = st.checkbox("Risco ambiental não disponível", value=False)
+                env_risk_level = st.selectbox(
+                    "Nível de risco ambiental",
+                    ["BAIXO", "MEDIO", "ALTO"],
+                    help="Ignorado se marcado como não disponível.",
+                )
+
+            with col_env4:
+                bioma_na = st.checkbox("Bioma não disponível", value=False)
+                bioma = st.selectbox(
+                    "Bioma",
+                    ["AMAZÔNIA", "CAATINGA", "CERRADO", "MATA ATLÂNTICA", "PAMPA", "PANTANAL"],
+                    index=2,
+                    help="Ignorado se marcado como não disponível.",
+                )
+
             st.markdown("#### Qualidade Documental")
             col_d, col_e, col_f = st.columns(3)
 
             with col_d:
-                ocr_confidence = st.slider(
-                    "Confiança OCR", 0.147, 0.996, 0.701, 0.001, format="%.3f"
+                doc_type = st.selectbox(
+                    "Tipo de documento",
+                    ["CONTRATO", "DIVERGENTE", "EXTRATO", "LAUDO", "NF"],
                 )
                 ocr_engine = st.selectbox(
                     "Motor OCR", ["AZURE_OCR", "GOOGLE_VISION", "TESSERACT"]
                 )
+                ocr_confidence = st.number_input(
+                    "Confiança OCR", min_value=0.147, max_value=0.996, value=0.701,
+                    step=0.001, format="%.3f",
+                )
 
             with col_e:
-                match_score = st.slider(
-                    "Score de correspondência (match)", 0.097, 0.990, 0.666, 0.001, format="%.3f"
+                match_score = st.number_input(
+                    "Score de correspondência (match)", min_value=0.097, max_value=0.990,
+                    value=0.666, step=0.001, format="%.3f",
                 )
-                data_quality_score = st.slider(
-                    "Score de qualidade dos dados", 0.426, 0.936, 0.719, 0.001, format="%.3f"
+                data_quality_score = st.number_input(
+                    "Score de qualidade dos dados", min_value=0.426, max_value=0.936,
+                    value=0.719, step=0.001, format="%.3f",
                 )
+                pii_detected = st.checkbox("PII detectado no documento", value=False)
 
             with col_f:
-                rule_violations = st.slider(
-                    "Violações de regras", 0, 9, 1
+                rule_violations = st.number_input(
+                    "Violações de regras", min_value=0, max_value=9, value=1, step=1,
                 )
-                document_image_quality = st.slider(
-                    "Qualidade da imagem do documento", 0.213, 0.994, 0.726, 0.001, format="%.3f"
+                document_image_quality = st.number_input(
+                    "Qualidade da imagem do documento", min_value=0.213, max_value=0.994,
+                    value=0.726, step=0.001, format="%.3f",
                 )
                 join_status = st.selectbox(
                     "Status de junção de dados",
@@ -1348,16 +1389,16 @@ elif menu == "7. Previsão e Resultados do Modelo":
             # Sobrescreve com os valores do formulário
             form_values = {
                 "customer_segment":       customer_segment,
+                "industry_sector":        industry_sector,
                 "income_declared":        income_declared,
                 "credit_requested_value": credit_requested_value,
-                "tenure_months":          tenure_months,
+                "tenure_months":          float(tenure_months),
                 "pd_model_score":         pd_model_score,
                 "ltv":                    ltv,
                 "collateral_type":        collateral_type,
-                "env_risk_level":         env_risk_level,
-                "drought_spi":            drought_spi,
-                "flood_risk_idx":         flood_risk_idx,
-                "bioma":                  bioma,
+                "uf":                     uf,
+                "regiao":                 regiao,
+                "doc_type":               doc_type,
                 "compliance_status":      compliance_status,
                 "ocr_confidence":         ocr_confidence,
                 "ocr_engine":             ocr_engine,
@@ -1366,7 +1407,17 @@ elif menu == "7. Previsão e Resultados do Modelo":
                 "rule_violations":        float(rule_violations),
                 "document_image_quality": document_image_quality,
                 "join_status":            join_status,
+                "pii_detected":           1.0 if pii_detected else 0.0,
             }
+            # Optional environmental fields — omit if user marked as unavailable (median from medians_dict applies)
+            if not drought_spi_na:
+                form_values["drought_spi"] = drought_spi
+            if not flood_risk_idx_na:
+                form_values["flood_risk_idx"] = flood_risk_idx
+            if not env_risk_level_na:
+                form_values["env_risk_level"] = env_risk_level
+            if not bioma_na:
+                form_values["bioma"] = bioma
 
             # Codifica categoricals com os LabelEncoders do treino
             for col, val in form_values.items():
@@ -1443,9 +1494,9 @@ elif menu == "7. Previsão e Resultados do Modelo":
                 flags.append(f"⚠️ **LTV = {ltv:.2f}** — acima de 1,0 (limiar crítico)")
             if pd_model_score > pd_score_q75:
                 flags.append(f"⚠️ **Score PD = {pd_model_score:.3f}** — no quartil superior de risco")
-            if drought_spi < -1.5:
+            if not drought_spi_na and drought_spi < -1.5:
                 flags.append(f"⚠️ **SPI = {drought_spi:.2f}** — região em seca severa (+6,6pp na inadimplência histórica)")
-            if env_risk_level == "ALTO":
+            if not env_risk_level_na and env_risk_level == "ALTO":
                 flags.append(f"⚠️ **Risco ambiental ALTO** — segmento {customer_segment} com este risco: ~30%+ de default histórico")
             if compliance_status == "REVIEW":
                 flags.append("⚠️ **Compliance em REVIEW** — sinal operacional de alerta")
