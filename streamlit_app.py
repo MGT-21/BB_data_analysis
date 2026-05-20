@@ -1165,6 +1165,15 @@ elif menu == "7. Previsão e Resultados do Modelo":
         _require(p)
         return joblib.load(p)
 
+    @st.cache_resource(show_spinner="Carregando métricas por modelo…")
+    def load_model_seg_metricas():
+        rf_met  = joblib.load(_RF_DIR  / 'metrics.joblib')
+        gbm_met = joblib.load(_GBM_DIR / 'metrics.joblib')
+        return {
+            'RF Segmentado':  rf_met['seg_metricas'],
+            'GBM Segmentado': gbm_met['seg_metricas'],
+        }
+
     @st.cache_resource
     def load_seg_model(seg, sec):
         p = _RF_DIR / 'seg' / f'{seg}_{sec}.joblib'
@@ -1172,10 +1181,11 @@ elif menu == "7. Previsão e Resultados do Modelo":
             return None
         return joblib.load(p)
 
-    gbm_art     = load_gbm_global()
-    rf_art      = load_rf_global()
-    metrics_art = load_metrics()
-    seg_art     = load_seg_artifacts()
+    gbm_art          = load_gbm_global()
+    rf_art           = load_rf_global()
+    metrics_art      = load_metrics()
+    seg_art          = load_seg_artifacts()
+    all_seg_metricas = load_model_seg_metricas()
 
     gbm_model    = gbm_art['model']
     le_dict      = gbm_art['le_dict']
@@ -1463,15 +1473,13 @@ elif menu == "7. Previsão e Resultados do Modelo":
         """)
 
         # ── Métricas ao vivo — todos os modelos ─────────────────────────
-        st.subheader("📈 Métricas no Conjunto de Teste")
-        st.caption("Todos os modelos avaliados no mesmo conjunto de teste de 20% — comparação direta e justa.")
+        st.subheader("📊 Métricas no Conjunto de Teste")
         cols_met = st.columns(len(metricas))
         best_roc = max(v["roc"] for v in metricas.values())
         for col_m, (nome, vals) in zip(cols_met, metricas.items()):
             is_best = vals["roc"] >= best_roc
             delta = "🏆 melhor" if is_best else f"{(vals['roc'] - best_roc)*100:.2f}pp vs melhor"
             col_m.metric(nome, f"ROC {vals['roc']:.4f}", delta, delta_color="normal" if is_best else "off")
-            col_m.caption(f"PR-AUC {vals['pr']:.4f}")
 
         # ── Curvas ROC — reais (conjunto de teste) ───────────────────────
         st.subheader("📈 Curvas ROC — Todos os Modelos")
@@ -1497,12 +1505,21 @@ elif menu == "7. Previsão e Resultados do Modelo":
         finally:
             plt.close(fig_roc)
 
+
         # ── Curvas Precision-Recall ───────────────────────────────────────
-        st.subheader("📈 Curvas Precision-Recall — Todos os Modelos")
+        st.subheader("📉 Curvas Precision-Recall — Todos os Modelos")
         st.caption(
             f"Baseline (linha pontilhada) = prevalência de inadimplência no conjunto de teste "
             f"({pos_rate*100:.1f}%). Uma curva útil fica acima desta linha."
         )
+        # ── PR-AUC metrics cards ──────────────────────────────────────────
+        cols_pr = st.columns(len(metricas))
+        best_pr = max(v["pr"] for v in metricas.values())
+        for col_p, (nome, vals) in zip(cols_pr, metricas.items()):
+            is_best_pr = vals["pr"] >= best_pr
+            delta_pr = "🏆 melhor" if is_best_pr else f"{(vals['pr'] - best_pr)*100:.2f}pp vs melhor"
+            col_p.metric(nome, f"PR-AUC {vals['pr']:.4f}", delta_pr, delta_color="normal" if is_best_pr else "off")
+
         fig_pr, ax_pr = plt.subplots(figsize=(9, 5))
         try:
             for nome, (rec_pts, prec_pts) in pr_curves.items():
@@ -1514,7 +1531,7 @@ elif menu == "7. Previsão e Resultados do Modelo":
             ax_pr.set_xlabel("Recall (Taxa de Verdadeiros Positivos)")
             ax_pr.set_ylabel("Precisão")
             ax_pr.set_xlim(0, 1)
-            ax_pr.set_ylim(0, 0.3)
+            ax_pr.set_ylim(0.15, 0.3)
             ax_pr.legend(fontsize=9, loc="upper right")
             ax_pr.set_title("Curva Precision-Recall — conjunto de teste (20% dos dados)", fontsize=11)
             plt.tight_layout()
@@ -1705,29 +1722,53 @@ de elevar o ROC-AUC para a faixa 0,65-0,72 em portfólios similares na literatur
         # ── Desempenho por segmento ───────────────────────────────────────
         st.markdown("---")
         st.subheader("📊 Desempenho por Segmento — Modelos Segmentados")
-        st.caption("ROC-AUC do modelo segmentado para cada customer_segment no conjunto de teste.")
 
-        df_seg_met = pd.DataFrame(seg_metricas).T.reset_index()
+        _seg_col1, _seg_col2 = st.columns(2)
+        _seg_modelo = _seg_col1.radio(
+            "Modelo segmentado",
+            ["RF Segmentado", "GBM Segmentado"],
+            horizontal=True,
+        )
+        _seg_metrica = _seg_col2.radio(
+            "Métrica",
+            ["Precision-Recall (PR-AUC)", "ROC-AUC"],
+            horizontal=True,
+        )
+        _use_pr = _seg_metrica.startswith("Precision")
+        _metric_key = "pr" if _use_pr else "roc"
+        _metric_label = "PR-AUC" if _use_pr else "ROC-AUC"
+
+        _ref_global_roc = metricas.get(_seg_modelo.replace("Segmentado", "Global").strip(), {}).get("roc", _gbm_g_roc)
+        _ref_global_pr  = metricas.get(_seg_modelo.replace("Segmentado", "Global").strip(), {}).get("pr", 0)
+        _ref_val = _ref_global_pr if _use_pr else _ref_global_roc
+        _ref_name = _seg_modelo.replace("Segmentado", "Global").strip()
+
+        _seg_data = all_seg_metricas[_seg_modelo]
+        df_seg_met = pd.DataFrame(_seg_data).T.reset_index()
         df_seg_met.columns = ["Segmento", "ROC-AUC", "PR-AUC", "N Teste"]
-        df_seg_met = df_seg_met.sort_values("ROC-AUC", ascending=False).reset_index(drop=True)
+        df_seg_met = df_seg_met.sort_values(_metric_label, ascending=False).reset_index(drop=True)
+
+        st.caption(
+            f"{_metric_label} do **{_seg_modelo}** por customer_segment — "
+            f"linha azul = {_ref_name} ({_ref_val:.4f})."
+        )
 
         fig_seg, ax_seg = plt.subplots(figsize=(9, 4))
         try:
-            roc_ref = _gbm_g_roc
-            cores_seg_bar = ["#E24B4A" if v < roc_ref else "#1D9E75"
-                             for v in df_seg_met["ROC-AUC"]]
-            ax_seg.barh(df_seg_met["Segmento"], df_seg_met["ROC-AUC"],
+            cores_seg_bar = ["#E24B4A" if v < _ref_val else "#1D9E75"
+                             for v in df_seg_met[_metric_label]]
+            ax_seg.barh(df_seg_met["Segmento"], df_seg_met[_metric_label],
                         color=cores_seg_bar, edgecolor="white", height=0.6)
-            ax_seg.axvline(x=roc_ref, color="#378ADD", linestyle="--", linewidth=1.5,
-                           label=f"GBM Global ({roc_ref:.4f})")
-            ax_seg.set_xlabel("ROC-AUC")
-            ax_seg.set_title("ROC-AUC por Segmento (modelo segmentado)")
+            ax_seg.axvline(x=_ref_val, color="#378ADD", linestyle="--", linewidth=1.5,
+                           label=f"{_ref_name} ({_ref_val:.4f})")
+            ax_seg.set_xlabel(_metric_label)
+            ax_seg.set_title(f"{_metric_label} por Segmento ({_seg_modelo})")
             ax_seg.legend(fontsize=9)
             plt.tight_layout()
             st.pyplot(fig_seg)
         finally:
             plt.close(fig_seg)
-        st.caption("🔴 Abaixo do GBM Global  |  🟢 Acima do GBM Global  |  🔵 linha = GBM Global")
+        st.caption(f"🔴 Abaixo do {_ref_name}  |  🟢 Acima do {_ref_name}  |  🔵 linha = {_ref_name}")
 
         # ── Conclusão ─────────────────────────────────────────────────────
         st.markdown("---")
