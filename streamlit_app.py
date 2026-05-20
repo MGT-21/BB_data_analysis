@@ -1187,6 +1187,8 @@ elif menu == "7. Previsão e Resultados do Modelo":
     metricas     = metrics_art['metricas']
     seg_metricas = metrics_art['seg_metricas']
     roc_curves   = metrics_art['roc_curves']
+    pr_curves    = metrics_art['pr_curves']
+    pos_rate     = metrics_art.get('pos_rate', 0.166)
 
     # ── Abas ────────────────────────────────────────────────────────────────
     aba_pred, aba_modelo = st.tabs([
@@ -1466,12 +1468,13 @@ elif menu == "7. Previsão e Resultados do Modelo":
         cols_met = st.columns(len(metricas))
         best_roc = max(v["roc"] for v in metricas.values())
         for col_m, (nome, vals) in zip(cols_met, metricas.items()):
-            delta = f"+{(vals['roc'] - best_roc)*100:.2f}pp vs melhor" if vals["roc"] < best_roc else "🏆 melhor"
-            col_m.metric(nome, f"ROC {vals['roc']:.4f}", delta)
+            is_best = vals["roc"] >= best_roc
+            delta = "🏆 melhor" if is_best else f"{(vals['roc'] - best_roc)*100:.2f}pp vs melhor"
+            col_m.metric(nome, f"ROC {vals['roc']:.4f}", delta, delta_color="normal" if is_best else "off")
             col_m.caption(f"PR-AUC {vals['pr']:.4f}")
 
         # ── Curvas ROC — reais (conjunto de teste) ───────────────────────
-        st.subheader("📉 Curvas ROC — Todos os Modelos")
+        st.subheader("📈 Curvas ROC — Todos os Modelos")
         _paleta_roc = {
             "GBM Global":     ("#d62728", "-"),
             "GBM Segmentado": ("#d62728", "--"),
@@ -1493,6 +1496,31 @@ elif menu == "7. Previsão e Resultados do Modelo":
             st.pyplot(fig_roc)
         finally:
             plt.close(fig_roc)
+
+        # ── Curvas Precision-Recall ───────────────────────────────────────
+        st.subheader("📈 Curvas Precision-Recall — Todos os Modelos")
+        st.caption(
+            f"Baseline (linha pontilhada) = prevalência de inadimplência no conjunto de teste "
+            f"({pos_rate*100:.1f}%). Uma curva útil fica acima desta linha."
+        )
+        fig_pr, ax_pr = plt.subplots(figsize=(9, 5))
+        try:
+            for nome, (rec_pts, prec_pts) in pr_curves.items():
+                cor, ls = _paleta_roc.get(nome, ("#888", "-"))
+                ax_pr.plot(rec_pts, prec_pts, color=cor, linestyle=ls, linewidth=2,
+                           label=f"{nome}  PR-AUC={metricas[nome]['pr']:.4f}")
+            ax_pr.axhline(pos_rate, color="gray", linestyle="--", linewidth=0.8,
+                          alpha=0.6, label=f"Aleatório ({pos_rate*100:.1f}%)")
+            ax_pr.set_xlabel("Recall (Taxa de Verdadeiros Positivos)")
+            ax_pr.set_ylabel("Precisão")
+            ax_pr.set_xlim(0, 1)
+            ax_pr.set_ylim(0, 1)
+            ax_pr.legend(fontsize=9, loc="upper right")
+            ax_pr.set_title("Curva Precision-Recall — conjunto de teste (20% dos dados)", fontsize=11)
+            plt.tight_layout()
+            st.pyplot(fig_pr)
+        finally:
+            plt.close(fig_pr)
 
         # ── Análise dos resultados ────────────────────────────────────────
         st.markdown("---")
@@ -1562,12 +1590,12 @@ demora minutos — uma vantagem prática relevante para retreinamentos periódic
 Treinar modelos separados por `(customer_segment, industry_sector)` — 42 submodelos no total —
 produziu resultados **piores** do que um único modelo global em todas as combinações testadas:
 
-| Modelo | ROC-AUC |
-|---|---|
-| GBM Global | {_gbm_g_roc:.4f} |
-| RF Global | {_rf_g_roc:.4f} |
-| RF Segmentado | {_rf_s_roc:.4f} |
-| GBM Segmentado | {_gbm_s_roc:.4f} |
+| Modelo | ROC-AUC | PR-AUC |
+|---|---|---|
+| GBM Global | {_gbm_g_roc:.4f} | {metricas.get("GBM Global", {}).get("pr", 0):.4f} |
+| RF Global | {_rf_g_roc:.4f} | {metricas.get("RF Global", {}).get("pr", 0):.4f} |
+| RF Segmentado | {_rf_s_roc:.4f} | {metricas.get("RF Segmentado", {}).get("pr", 0):.4f} |
+| GBM Segmentado | {_gbm_s_roc:.4f} | {metricas.get("GBM Segmentado", {}).get("pr", 0):.4f} |
 
 **Por quê?**
 
