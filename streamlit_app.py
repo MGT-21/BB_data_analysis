@@ -1514,7 +1514,7 @@ elif menu == "7. Previsão e Resultados do Modelo":
             ax_pr.set_xlabel("Recall (Taxa de Verdadeiros Positivos)")
             ax_pr.set_ylabel("Precisão")
             ax_pr.set_xlim(0, 1)
-            ax_pr.set_ylim(0, 1)
+            ax_pr.set_ylim(0, 0.3)
             ax_pr.legend(fontsize=9, loc="upper right")
             ax_pr.set_title("Curva Precision-Recall — conjunto de teste (20% dos dados)", fontsize=11)
             plt.tight_layout()
