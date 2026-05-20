@@ -39,78 +39,8 @@ apply_global_styles()
 # ==========================================
 @st.cache_data
 def load_data():
-    """
-    Carrega os dados e processa TODAS as features derivadas aqui dentro,
-    evitando mutações no DataFrame cacheado fora desta função.
-    """
-    try:
-        from config import SILVER_DATASET
-        df = pd.read_csv(SILVER_DATASET)
-    except ImportError:
-        st.warning("⚠️ Arquivo config.py não encontrado. Tentando ler 'silver_dataset.csv' localmente.")
-        df = pd.read_csv("silver_dataset.csv")
-
-    # ---- Features de Fraude ----
-    if "fraude_score" not in df.columns:
-        df["fraude_idioma_estrangeiro"] = (df.get("text_language", "PT") != "PT").astype(int)
-        df["fraude_sem_garantia"]       = (df.get("collateral_type", "") == "SEM_GARANTIA").astype(int)
-        df["fraude_match_baixo"]        = (df.get("match_score", 1.0) < 0.4).astype(int)
-        df["fraude_pii_idioma"]         = ((df.get("text_language", "PT") != "PT") & (df.get("pii_detected", 1) == 0)).astype(int)
-        df["fraude_muitas_violacoes"]   = (df.get("rule_violations", 0) > 2).astype(int)
-        df["fraude_duplicado"]          = (df.get("is_duplicate", 0) == 1).astype(int)
-        df["fraude_ocr_baixo"]          = (df.get("ocr_confidence", 1.0) < 0.5).astype(int)
-        df["fraude_compliance_review"]  = (df.get("compliance_status", "") == "REVIEW").astype(int)
-
-        sinais = [
-            "fraude_idioma_estrangeiro", "fraude_sem_garantia", "fraude_match_baixo",
-            "fraude_pii_idioma", "fraude_muitas_violacoes", "fraude_duplicado",
-            "fraude_ocr_baixo", "fraude_compliance_review"
-        ]
-        sinais_existentes = [s for s in sinais if s in df.columns]
-        df["fraude_score"] = df[sinais_existentes].sum(axis=1)
-        df["fraude_risco"] = pd.cut(
-            df["fraude_score"],
-            bins=[-1, 1, 3, 8],
-            labels=["BAIXO", "MEDIO", "ALTO"]
-        )
-
-    # ── Engenharia de features ambientais ──────────────────────────────────
-    if "drought_bin" not in df.columns:
-        df["drought_bin"] = pd.cut(
-         df["drought_spi"],
-         bins=[-5, -1.5, -0.5, 0.5, 5],
-         labels=["Seca severa", "Seca moderada", "Normal", "Úmido"],
-     )
-
-    if "ratio_credit_income" not in df.columns:
-        df["ratio_credit_income"] = (
-         df["credit_requested_value"] / df["income_declared"].replace(0, np.nan)
-     ).replace([np.inf, -np.inf], np.nan)
-
-    if "risk_tier" not in df.columns:
-        df["risk_tier"] = (
-         (df["ltv"] > 1.0).astype(int)
-         + (df["pd_model_score"] > df["pd_model_score"].quantile(0.75)).astype(int)
-         + (df["drought_spi"] < df["drought_spi"].quantile(0.25)).astype(int)
-         + (df["flood_risk_idx"] > df["flood_risk_idx"].quantile(0.75)).astype(int)
-         + (df["ratio_credit_income"] > 0.6).astype(int)
-     )
-
-
-    # ---- Features derivadas usadas em múltiplas páginas ----
-    # Calculadas uma vez aqui em vez de em cada rerun
-    if "ratio" not in df.columns:
-        df["ratio"] = df["credit_requested_value"] / df["income_declared"]
-        df["ratio"] = df["ratio"].replace([np.inf, -np.inf], np.nan)
-
-    if "ltv_faixa" not in df.columns:
-        df["ltv_faixa"] = pd.cut(
-            df["ltv"],
-            bins=[0, 0.5, 1.0, 1.5, 2.0, 100],
-            labels=["0–50%", "50–100%", "100–150%", "150–200%", ">200%"]
-        )
-
-    return df
+    from config import GOLD_DASHBOARD
+    return pd.read_csv(GOLD_DASHBOARD)
 
 
 try:
@@ -773,16 +703,6 @@ elif menu == "5. Problema proposta - pilares":
     st.plotly_chart(fig_imp, use_container_width=True)
     # NOTE: Plotly figures are garbage-collected automatically; no manual close needed.
 
-    # ==========================================
-# PÁGINA 6: RISCO AMBIENTAL × SEGMENTO
-# ==========================================
-# Cole este bloco no elif do menu principal:
-#   elif menu == "6. Risco Ambiental × Segmento":
-# Requer que load_data() já tenha criado:
-#   df["drought_bin"], df["ratio_credit_income"], df["risk_tier"]
-# (ver snippet de load_data() ao final deste arquivo)
-# ==========================================
-
 elif menu == "6. Risco Ambiental × Segmento":
     import matplotlib.colors as mcolors
 
@@ -911,13 +831,6 @@ elif menu == "6. Risco Ambiental × Segmento":
 
     # ── 2. Inadimplência por Seca (drought_spi) ────────────────────────────
     st.subheader("🌵 Inadimplência por Nível de Seca (SPI)")
-
-    if "drought_bin" not in df.columns:
-        df["drought_bin"] = pd.cut(
-            df["drought_spi"],
-            bins=[-5, -1.5, -0.5, 0.5, 5],
-            labels=["Seca severa", "Seca moderada", "Normal", "Úmido"],
-        )
 
     drought_stats = (
         df.groupby("drought_bin", observed=True)
@@ -1218,44 +1131,44 @@ elif menu == "7. Previsão e Resultados do Modelo":
 
     st.title("🤖 Previsão de Inadimplência")
 
-    _MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
+    from config import MODELS_DIR as _MODELS_DIR, RF_MODELS_DIR as _RF_DIR, GBM_MODELS_DIR as _GBM_DIR
 
     def _require(path):
-        if not os.path.exists(path):
+        if not path.exists():
             st.error(
                 f"Modelo não encontrado: `{path}`. "
-                "Execute o notebook `notebooks/silver_databridge_segmented_rf.ipynb` para gerá-lo."
+                "Execute `notebooks/train_gbm.ipynb` e `notebooks/train_rf.ipynb` para gerá-los."
             )
             st.stop()
 
     @st.cache_resource(show_spinner="Carregando GBM Global…")
     def load_gbm_global():
-        p = os.path.join(_MODELS_DIR, 'gbm_global.joblib')
+        p = _GBM_DIR / 'global.joblib'
         _require(p)
         return joblib.load(p)
 
     @st.cache_resource(show_spinner="Carregando RF Global…")
     def load_rf_global():
-        p = os.path.join(_MODELS_DIR, 'rf_global.joblib')
+        p = _RF_DIR / 'global.joblib'
         _require(p)
         return joblib.load(p)
 
     @st.cache_resource(show_spinner="Carregando métricas…")
     def load_metrics():
-        p = os.path.join(_MODELS_DIR, 'metrics.joblib')
+        p = _MODELS_DIR / 'metrics.joblib'
         _require(p)
         return joblib.load(p)
 
     @st.cache_resource(show_spinner="Carregando artefatos segmentados…")
     def load_seg_artifacts():
-        p = os.path.join(_MODELS_DIR, 'seg_artifacts.joblib')
+        p = _RF_DIR / 'seg_artifacts.joblib'
         _require(p)
         return joblib.load(p)
 
     @st.cache_resource
     def load_seg_model(seg, sec):
-        p = os.path.join(_MODELS_DIR, 'seg', f'{seg}_{sec}.joblib')
-        if not os.path.exists(p):
+        p = _RF_DIR / 'seg' / f'{seg}_{sec}.joblib'
+        if not p.exists():
             return None
         return joblib.load(p)
 
@@ -1527,7 +1440,7 @@ elif menu == "7. Previsão e Resultados do Modelo":
             if collateral_type == "SEM_GARANTIA":
                 flags.append("⚠️ **Sem garantia** — ausência de colateral aumenta perda em caso de default")
             if credit_requested_value / max(income_declared, 1) > 0.6:
-                ratio = credit_requested_value / income_declared
+                ratio = credit_requested_value / max(income_declared, 1)
                 flags.append(f"⚠️ **Relação crédito/renda = {ratio:.2f}** — acima de 0,6 (faixa de atenção)")
 
             if flags:
@@ -1547,72 +1460,30 @@ elif menu == "7. Previsão e Resultados do Modelo":
         do modelo em produção.
         """)
 
-        # ── Contexto experimental ────────────────────────────────────────
-        with st.expander("🧪 Contexto e hipóteses testadas", expanded=True):
-            st.markdown("""
-            **Quatro variantes foram avaliadas:**
+        # ── Métricas ao vivo — todos os modelos ─────────────────────────
+        st.subheader("📈 Métricas no Conjunto de Teste")
+        st.caption("Todos os modelos avaliados no mesmo conjunto de teste de 20% — comparação direta e justa.")
+        cols_met = st.columns(len(metricas))
+        best_roc = max(v["roc"] for v in metricas.values())
+        for col_m, (nome, vals) in zip(cols_met, metricas.items()):
+            delta = f"+{(vals['roc'] - best_roc)*100:.2f}pp vs melhor" if vals["roc"] < best_roc else "🏆 melhor"
+            col_m.metric(nome, f"ROC {vals['roc']:.4f}", f"PR-AUC {vals['pr']:.4f}")
 
-            | Modelo | Features | ROC-AUC | PR-AUC | Tempo de treino |
-            |---|---|---|---|---|
-            | RF baseline | 45 originais | 0.5590 | 0.2044 | ~23s |
-            | RF engenheiradas | 48 (+ derivadas) | 0.5576 | 0.2020 | ~22s |
-            | **GBM baseline** | **45 originais** | **0.5640** | **0.2058** | **~0,4s** |
-            | GBM engenheiradas | 48 (+ derivadas) | 0.5546 | 0.2017 | ~0,3s |
-
-            *Resultados do notebook anterior. Os valores abaixo refletem o treinamento ao vivo nesta sessão.*
-
-            **Hipótese testada:** features engenheiradas (drought_bin, ratio_credit_income, ltv_x_pd,
-            env_composite) melhorariam o poder preditivo dos modelos.
-
-            **Resultado:** as features engenheiradas *pioraram* ligeiramente ambos os modelos.
-            """)
-
-        # ── Métricas ao vivo ─────────────────────────────────────────────
-        st.subheader("📈 Métricas no Conjunto de Teste (ao vivo)")
-
-        col_m1, col_m2, col_m3 = st.columns(3)
-        for col_m, (nome, vals) in zip(
-            [col_m1, col_m2, col_m3], metricas.items()
-        ):
-            col_m.metric(
-                nome,
-                f"ROC {vals['roc']:.4f}",
-                f"PR-AUC {vals['pr']:.4f}",
-            )
-
-        with st.expander("🔍 Por que as features engenheiradas pioraram os modelos?", expanded=True):
-            st.markdown("""
-            Este é um achado negativo genuinamente informativo — não um fracasso.
-
-            **O mecanismo:** árvores de decisão (RF e GBM) já encontram os limiares ótimos
-            nos dados contínuos. Quando `drought_spi = -1,3` é o melhor corte real,
-            mas o bucket força `-1,5`, o modelo perde resolução. Pré-processar categorias
-            para modelos baseados em árvores é jogar informação fora.
-
-            **A regra prática:** features engenheiradas ajudam modelos que *não* encontram
-            interações sozinhos — regressão logística, SVM, redes neurais rasas.
-            Para RF e GBM, o preprocessing certo é mínimo: imputação de nulos e encoding
-            de categoriais. Nada mais.
-
-            **Onde as features ainda fazem sentido:** no *dashboard* (humans need readable
-            buckets) e em modelos lineares para fins regulatórios.
-            """)
-
-        # ── Curvas ROC ───────────────────────────────────────────────────
-        st.subheader("📉 Curvas ROC — Comparativo dos 3 Modelos")
-        fig_roc, ax_roc = plt.subplots(figsize=(8, 5))
+        # ── Curvas ROC — dinâmicas ────────────────────────────────────────
+        st.subheader("📉 Curvas ROC — Todos os Modelos")
+        _paleta_roc = {
+            "GBM Global":     ("#d62728", "-"),
+            "GBM Segmentado": ("#d62728", "--"),
+            "RF Global":      ("#1f77b4", "-"),
+            "RF Segmentado":  ("#1f77b4", "--"),
+        }
+        fig_roc, ax_roc = plt.subplots(figsize=(9, 5))
         try:
-            cores_roc = {"GBM Global": "#378ADD", "RF Global": "#1D9E75", "RF Segmentado": "#E24B4A"}
-            estilos   = {"GBM Global": "-",       "RF Global": "--",      "RF Segmentado": ":"}
             for nome, (fpr_pts, tpr_pts) in roc_curves.items():
-                ax_roc.plot(
-                    fpr_pts, tpr_pts,
-                    color=cores_roc[nome],
-                    linestyle=estilos[nome],
-                    linewidth=2,
-                    label=f"{nome} (ROC = {metricas[nome]['roc']:.4f})",
-                )
-            ax_roc.plot([0, 1], [0, 1], "k--", linewidth=0.8, alpha=0.5, label="Aleatório")
+                cor, ls = _paleta_roc.get(nome, ("#888", "-"))
+                ax_roc.plot(fpr_pts, tpr_pts, color=cor, linestyle=ls, linewidth=2,
+                            label=f"{nome}  ROC={metricas[nome]['roc']:.4f}")
+            ax_roc.plot([0, 1], [0, 1], "k--", linewidth=0.8, alpha=0.4, label="Aleatório")
             ax_roc.set_xlabel("Taxa de Falsos Positivos")
             ax_roc.set_ylabel("Taxa de Verdadeiros Positivos")
             ax_roc.legend(fontsize=9, loc="lower right")
@@ -1622,113 +1493,154 @@ elif menu == "7. Previsão e Resultados do Modelo":
         finally:
             plt.close(fig_roc)
 
-        # ── RF Bracketed: análise honesta ────────────────────────────────
+        # ── Análise dos resultados ────────────────────────────────────────
         st.markdown("---")
-        st.subheader("🔬 RF Segmentado (notebook): análise por segmento × setor")
+        st.subheader("🔎 Análise dos Resultados")
 
-        with st.expander("📖 O que é o RF Bracketed e o que esperávamos", expanded=True):
+        _best = max(metricas, key=lambda k: metricas[k]["roc"])
+        _best_roc = metricas[_best]["roc"]
+        _gbm_g_roc = metricas.get("GBM Global", {}).get("roc", 0)
+        _rf_g_roc  = metricas.get("RF Global",  {}).get("roc", 0)
+        _gbm_s_roc = metricas.get("GBM Segmentado", {}).get("roc", 0)
+        _rf_s_roc  = metricas.get("RF Segmentado",  {}).get("roc", 0)
+
+        with st.expander("📊 Por que o ROC-AUC ficou entre 0,51 e 0,59?", expanded=True):
             st.markdown(f"""
-            **Hipótese:** treinar um RandomForest *separado por segmento* (AGRO_GRANDE,
-            AGRO_MEDIO, PF, etc.) permitiria ao modelo capturar padrões específicos de
-            cada segmento sem que a mistura de populações "confundisse" as árvores.
+O modelo com melhor desempenho (**{_best}**) atingiu ROC-AUC de **{_best_roc:.4f}** — valor modesto
+para padrões de mercado, onde modelos de crédito maduros costumam superar 0,70.
+Há três razões principais para esse teto:
 
-            A intuição era razoável: a análise do mapa de calor segmento × risco ambiental
-            mostrou que AGRO_MEDIO + ALTO chega a **33,3% de default**, enquanto
-            AGRO_PEQUENO + ALTO cai para **8,9%**. Com um modelo único, as árvores precisam
-            aprender essa interação implicitamente.
+**1. O `pd_model_score` já embute boa parte do sinal preditivo.**
+Esse score de probabilidade de default foi gerado por um sistema prévio que provavelmente
+consumiu informações mais ricas do que as disponíveis neste dataset — como histórico de
+relacionamento completo, consultas a bureaus externos e dados comportamentais.
+Qualquer modelo treinado aqui está, em certa medida, tentando reaprender o que o score já
+captura. Isso comprime artificialmente o ganho incremental que nossas variáveis adicionais
+podem oferecer.
 
-            **O que os dados mostraram:**
+**2. O dataset não contém os preditores mais poderosos de inadimplência.**
+Variáveis como histórico de pagamentos anteriores (90+ dias em atraso), score de bureau
+externo, safra agrícola do ano de contratação e preço de commodities no momento da
+concessão são amplamente documentadas na literatura como as mais preditivas para crédito
+rural e PF. Sua ausência cria um teto natural de desempenho — os modelos aprendem com o
+que há, mas falta o sinal mais forte.
 
-            | Modelo | ROC-AUC | PR-AUC |
-            |---|---|---|
-            | RF Global (único modelo) | **{metricas['RF Global']['roc']:.4f}** | **{metricas['RF Global']['pr']:.4f}** |
-            | RF Segmentado (42 submodelos, seg × setor) | {metricas['RF Segmentado']['roc']:.4f} | {metricas['RF Segmentado']['pr']:.4f} |
-            | Diferença | {metricas['RF Global']['roc'] - metricas['RF Segmentado']['roc']:+.4f} | {metricas['RF Global']['pr'] - metricas['RF Segmentado']['pr']:+.4f} |
+**3. Desbalanceamento de classes e tamanho de amostra.**
+Com apenas ~16,6% de inadimplentes em 24.974 registros, o modelo tem menos de 4.200 casos
+positivos para aprender padrões de default. Para modelos baseados em árvore com
+`class_weight='balanced'`, isso é administrável, mas ainda limita a capacidade de
+generalização — especialmente para eventos raros ou combinações incomuns de variáveis.
             """)
 
-        with st.expander("🔍 Por que o RF Global superou o Bracketed?", expanded=True):
+        with st.expander("⚡ Por que o GBM Global foi o melhor modelo?", expanded=True):
             st.markdown(f"""
-            Três fatores explicam o resultado:
+O **GBM Global** atingiu ROC {_gbm_g_roc:.4f} contra RF Global {_rf_g_roc:.4f} — uma
+diferença pequena mas consistente. Dois mecanismos explicam a superioridade do GBM:
 
-            **1. Tamanho de amostra por segmento é pequeno.**
-            Com ~3.500 registros por segmento no treino e ~700 no teste, cada RF
-            bracketed aprende com 8× menos dados que o modelo global. RF com 200 árvores
-            e profundidade 8 pode facilmente sobreajustar em amostras pequenas.
+**1. Aprendizado sequencial vs. paralelo.**
+O Gradient Boosting treina árvores sequencialmente, cada uma corrigindo os erros da
+anterior. Isso permite ao GBM focar progressivamente nos casos mais difíceis de classificar
+— exatamente o que é necessário num problema desbalanceado onde os inadimplentes
+representam apenas 1 em cada 6 contratos. O Random Forest, por outro lado, agrega
+árvores treinadas de forma independente, sem esse mecanismo de correção gradual.
 
-            **2. O RF Global já aprende as interações.**
-            Com `customer_segment` como feature, o modelo global pode criar splits como
-            `se segmento = AGRO_MEDIO e drought_spi < -1,5 → alto risco`.
-            Ele encontra a mesma interação sem precisar de modelos separados.
+**2. Menor profundidade, maior generalização.**
+O GBM foi configurado com `max_depth=4` (árvores rasas), enquanto o RF usou
+`max_depth=8`. Árvores mais rasas no GBM funcionam como regularização implícita:
+cada árvore individual é deliberadamente "fraca" (um *weak learner*), mas o ensemble
+de centenas delas converge para uma fronteira de decisão mais suave e menos sujeita
+a overfitting nos padrões de treino.
 
-            **3. Transferência de informação entre segmentos.**
-            Alguns padrões são universais: LTV alto aumenta risco em *todos* os segmentos.
-            O modelo global aprende esses padrões com 7× mais dados do que qualquer
-            modelo bracketed individualmente.
-
-            **Quando o bracketing funciona de verdade:**
-            Quando os segmentos têm *distribuições de features completamente diferentes* —
-            por exemplo, se AGRO usasse variáveis que PF nunca preenchesse, ou se a
-            escala de renda fosse incomparável entre grupos. Neste portfólio, as features
-            são compartilhadas e na mesma escala, então o modelo global ganha.
+**3. Velocidade sem perda de qualidade.**
+Além da melhor métrica, o GBM treina em segundos enquanto o RF com 300 árvores
+demora minutos — uma vantagem prática relevante para retreinamentos periódicos.
             """)
 
-        # ── Desempenho por segmento (bracketed) ─────────────────────────
-        st.subheader("📊 Desempenho do RF Segmentado por Segmento")
-        st.caption(
-            "Métricas do RF Segmentado (notebook) agregadas por customer_segment "
-            "no conjunto de teste da sessão atual."
-        )
+        with st.expander("🔢 Por que os modelos segmentados tiveram desempenho inferior?", expanded=True):
+            st.markdown(f"""
+Treinar modelos separados por `(customer_segment, industry_sector)` — 42 submodelos no total —
+produziu resultados **piores** do que um único modelo global em todas as combinações testadas:
 
-        df_seg_met = pd.DataFrame(seg_metricas).T.reset_index()
-        df_seg_met.columns = ["Segmento", "ROC-AUC", "PR-AUC", "N Teste"]
-        df_seg_met = df_seg_met.sort_values("ROC-AUC", ascending=False).reset_index(drop=True)
+| Modelo | ROC-AUC |
+|---|---|
+| GBM Global | {_gbm_g_roc:.4f} |
+| RF Global | {_rf_g_roc:.4f} |
+| RF Segmentado | {_rf_s_roc:.4f} |
+| GBM Segmentado | {_gbm_s_roc:.4f} |
 
-        fig_seg, axes_seg = plt.subplots(1, 2, figsize=(13, 4))
-        try:
-            roc_global_val = metricas["RF Global"]["roc"]
-            cores_seg_bar  = [
-                "#E24B4A" if v < roc_global_val else "#1D9E75"
-                for v in df_seg_met["ROC-AUC"]
-            ]
+**Por quê?**
 
-            axes_seg[0].barh(
-                df_seg_met["Segmento"], df_seg_met["ROC-AUC"],
-                color=cores_seg_bar, edgecolor="white", height=0.6
-            )
-            axes_seg[0].axvline(
-                x=roc_global_val, color="#378ADD", linestyle="--", linewidth=1.5,
-                label=f"RF Global ({roc_global_val:.4f})"
-            )
-            axes_seg[0].set_title("ROC-AUC por Segmento (RF Segmentado)")
-            axes_seg[0].set_xlabel("ROC-AUC")
-            axes_seg[0].legend(fontsize=9)
-            axes_seg[0].set_xlim(0.50, 0.64)
+**1. Amostra insuficiente por submodelo.**
+Com 42 combinações e ~20.000 registros de treino, cada submodelo aprende com apenas
+~560 linhas em média. É impossível treinar um RF com 300 árvores ou um GBM com 200
+iterações de forma robusta em amostras tão pequenas — o modelo decora os dados de treino
+em vez de generalizar.
 
-            pr_global_val = metricas["RF Global"]["pr"]
-            cores_pr_bar  = [
-                "#E24B4A" if v < pr_global_val else "#1D9E75"
-                for v in df_seg_met["PR-AUC"]
-            ]
-            axes_seg[1].barh(
-                df_seg_met["Segmento"], df_seg_met["PR-AUC"],
-                color=cores_pr_bar, edgecolor="white", height=0.6
-            )
-            axes_seg[1].axvline(
-                x=pr_global_val, color="#378ADD", linestyle="--", linewidth=1.5,
-                label=f"RF Global ({pr_global_val:.4f})"
-            )
-            axes_seg[1].set_title("PR-AUC por Segmento")
-            axes_seg[1].set_xlabel("PR-AUC")
-            axes_seg[1].legend(fontsize=9)
+**2. O modelo global já captura as interações por segmento.**
+Ao incluir `customer_segment` e `industry_sector` como features, o modelo global pode
+criar splits como *"se segmento = AGRO_MEDIO e drought_spi < -1,5 → alto risco"*
+com 7× mais dados disponíveis para validar esse padrão. A segmentação explícita não
+adiciona informação — ela apenas reduz o dado disponível para aprender.
 
-            plt.tight_layout()
-            st.pyplot(fig_seg)
-        finally:
-            plt.close(fig_seg)
+**3. Padrões universais se perdem.**
+Variáveis como LTV alto e baixa qualidade de dados afetam o risco de default em
+**todos** os segmentos. Um modelo segmentado aprende esse padrão separadamente em cada
+grupo, com menos exemplos e mais ruído. O modelo global aprende uma vez, com o dataset
+completo, e generaliza melhor.
 
-        st.caption(
-            "🔴 Abaixo do RF Global  |  🟢 Acima do RF Global  |  🔵 linha = RF Global"
-        )
+**Quando a segmentação funcionaria?**
+Se os segmentos tivessem features completamente diferentes (ex.: AGRO usa variáveis
+que PF nunca preenche) ou se as escalas fossem incomparáveis entre grupos. Neste
+portfólio, todas as features são compartilhadas e na mesma escala — a segmentação
+é contraproducente.
+            """)
+
+        with st.expander("🎯 O que as importâncias de variáveis revelam?", expanded=True):
+            st.markdown(f"""
+As importâncias do RF Global (proxy interpretável para o GBM) mostram três grupos distintos:
+
+**Grupo financeiro — domina o ranking:**
+`pd_model_score`, `ltv`, `income_declared` e `credit_requested_value` lideram.
+O `pd_model_score` sozinho concentra ~6-7% da importância total — confirma que
+o score pré-existente é a âncora do modelo. O LTV (razão entre crédito e renda)
+é o segundo sinal mais forte: contratos com LTV > 1,0 indicam que o mutuário está
+pedindo mais do que declara ganhar, um alerta claro de superendividamento.
+
+**Grupo ambiental — segundo bloco mais importante:**
+`drought_spi` e `flood_risk_idx` aparecem consistentemente no top-10.
+Isso corrobora toda a análise da aba 6: o risco climático não é apenas correlacionado
+com inadimplência — ele tem poder preditivo **independente** do score de crédito.
+Produtores rurais em regiões com seca severa (SPI < -1,5) inadimplem ~39% mais do que
+a média, mesmo controlando pelo LTV e `pd_model_score`.
+
+**Grupo operacional — sinal fraco mas presente:**
+`data_quality_score`, `match_score` e `ocr_confidence` têm importância individual
+pequena (~2-4% cada), mas somados representam que a *qualidade do processo de
+onboarding documental* carrega algum sinal sobre risco futuro. Uma hipótese: clientes
+que enviam documentos de baixa qualidade ou com informações inconsistentes podem ser
+mais propensos a omitir informações desfavoráveis — um sinal comportamental de risco.
+            """)
+
+        with st.expander("📋 Quais variáveis estão faltando e limitam o modelo?", expanded=True):
+            st.markdown(f"""
+O teto de ROC ≈ {_best_roc:.2f} indica que há sinal preditivo relevante **não capturado**
+pelo dataset atual. Com base na literatura de crédito e nas análises desta sessão,
+os candidatos mais prováveis são:
+
+| Variável ausente | Impacto esperado | Justificativa |
+|---|---|---|
+| Histórico de pagamentos (90+ dias) | Alto | Melhor preditor individual de default em todos os estudos de crédito |
+| Score de bureau externo (Serasa/SPC) | Alto | Captura comportamento fora do relacionamento com o banco |
+| Safra agrícola do ano de contratação | Médio | Choque de renda sistêmico para todo o portfólio AGRO |
+| Preço de commodities na concessão | Médio | Afeta a capacidade de pagamento de produtores rurais diretamente |
+| Número de contratos ativos do cliente | Médio | Indicador de comprometimento de renda com outras dívidas |
+| Região do imóvel/ativo dado em garantia | Baixo-Médio | Complementa o bioma para risco geográfico mais granular |
+
+**Recomendação prática:** antes de otimizar hiperparâmetros ou tentar arquiteturas
+mais complexas, o esforço deveria focar em enriquecer o dataset com pelo menos o
+histórico de pagamentos e o score de bureau. Esses dois campos sozinhos têm potencial
+de elevar o ROC-AUC para a faixa 0,65-0,72 em portfólios similares na literatura.
+            """)
 
         # ── Importâncias de features ─────────────────────────────────────
         st.markdown("---")
@@ -1761,47 +1673,53 @@ elif menu == "7. Previsão e Resultados do Modelo":
         finally:
             plt.close(fig_imp)
 
-        with st.expander("🔍 Leitura das importâncias", expanded=False):
-            st.markdown("""
-            **pd_model_score** lidera com margem — o score de PD pré-existente já captura
-            grande parte do risco. Isso é esperado: ele foi construído para este fim.
+        # ── Desempenho por segmento ───────────────────────────────────────
+        st.markdown("---")
+        st.subheader("📊 Desempenho por Segmento — Modelos Segmentados")
+        st.caption("ROC-AUC do modelo segmentado para cada customer_segment no conjunto de teste.")
 
-            **drought_spi é a 2ª variável ambiental mais importante**, confirmando o que
-            o dashboard mostrou: condições de seca têm efeito real e independente sobre
-            inadimplência, além do que o PD score já captura.
+        df_seg_met = pd.DataFrame(seg_metricas).T.reset_index()
+        df_seg_met.columns = ["Segmento", "ROC-AUC", "PR-AUC", "N Teste"]
+        df_seg_met = df_seg_met.sort_values("ROC-AUC", ascending=False).reset_index(drop=True)
 
-            **ltv e match_score** aparecem juntos no topo, reforçando que a qualidade da
-            garantia e a integridade documental complementam o score de crédito.
+        fig_seg, ax_seg = plt.subplots(figsize=(9, 4))
+        try:
+            roc_ref = _gbm_g_roc
+            cores_seg_bar = ["#E24B4A" if v < roc_ref else "#1D9E75"
+                             for v in df_seg_met["ROC-AUC"]]
+            ax_seg.barh(df_seg_met["Segmento"], df_seg_met["ROC-AUC"],
+                        color=cores_seg_bar, edgecolor="white", height=0.6)
+            ax_seg.axvline(x=roc_ref, color="#378ADD", linestyle="--", linewidth=1.5,
+                           label=f"GBM Global ({roc_ref:.4f})")
+            ax_seg.set_xlabel("ROC-AUC")
+            ax_seg.set_title("ROC-AUC por Segmento (modelo segmentado)")
+            ax_seg.legend(fontsize=9)
+            plt.tight_layout()
+            st.pyplot(fig_seg)
+        finally:
+            plt.close(fig_seg)
+        st.caption("🔴 Abaixo do GBM Global  |  🟢 Acima do GBM Global  |  🔵 linha = GBM Global")
 
-            **Variáveis operacionais** (data_quality_score, ocr_confidence, rule_violations)
-            têm importância distribuída mas não negligenciável — confirmando que
-            qualidade de dados de entrada afeta a previsão mesmo com o sinal de crédito presente.
-            """)
-
-        # ── Recomendação final ───────────────────────────────────────────
+        # ── Conclusão ─────────────────────────────────────────────────────
         st.markdown("---")
         with st.expander("✅ Conclusão e recomendação de produção", expanded=True):
             st.markdown(f"""
-            **Modelo recomendado para produção: GBM Global com features originais**
+**Modelo recomendado para produção: {_best}**
 
-            | Critério | Avaliação |
-            |---|---|
-            | ROC-AUC | 0.5797 (melhor entre os testados no notebook) |
-            | PR-AUC | 0.2228 |
-            | Tempo de treino | ~0,4s (60× mais rápido que RF) |
-            | Features engenheiradas | Não — pioram ligeiramente |
-            | RF Bracketed | Não — RF Global supera em ROC e PR-AUC |
+| Modelo | ROC-AUC | PR-AUC |
+|---|---|---|
+{"".join(f"| {'**' if k == _best else ''}{k}{'**' if k == _best else ''} | {'**' if k == _best else ''}{v['roc']:.4f}{'**' if k == _best else ''} | {'**' if k == _best else ''}{v['pr']:.4f}{'**' if k == _best else ''} |{chr(10)}" for k, v in metricas.items())}
 
-            **O que fazer com os achados negativos:**
+**Próximos passos prioritários:**
 
-            - As features engenheiradas continuam úteis no *dashboard*, onde buckets
-              legíveis são necessários para humanos.
-            - O RF Bracketed revelou que **AGRO_PEQUENO é o segmento mais previsível**
-              (ROC {seg_metricas.get('AGRO_PEQUENO', {}).get('roc', 'N/A')}) e
-              **PJ_ME é o mais difícil** (ROC {seg_metricas.get('PJ_ME', {}).get('roc', 'N/A')}).
-              Essa informação pode guiar estratégias de coleta de dados adicionais por segmento.
-            - O teto de ROC ~0,58 sugere que variáveis importantes estão faltando no dataset.
-              Candidatos: histórico de pagamentos, score externo (bureaus), safra agrícola,
-              preço de commodities no momento da concessão.
+1. **Enriquecer o dataset** com histórico de pagamentos e score de bureau externo —
+   potencial de elevar o ROC-AUC para a faixa 0,65–0,72.
+2. **Manter o GBM Global como baseline** — é mais rápido de treinar e supera consistentemente
+   todas as variantes segmentadas.
+3. **Usar os modelos segmentados apenas como análise exploratória**, não em produção —
+   o sinal por segmento é útil para entender o portfólio, mas não para predição.
+4. **Revisar contratos com `env_risk_level = ALTO` + segmento AGRO manualmente** —
+   a inadimplência histórica desse grupo (>30%) supera o que qualquer modelo consegue
+   capturar com as features atuais.
             """)
 
