@@ -1467,9 +1467,10 @@ elif menu == "7. Previsão e Resultados do Modelo":
         best_roc = max(v["roc"] for v in metricas.values())
         for col_m, (nome, vals) in zip(cols_met, metricas.items()):
             delta = f"+{(vals['roc'] - best_roc)*100:.2f}pp vs melhor" if vals["roc"] < best_roc else "🏆 melhor"
-            col_m.metric(nome, f"ROC {vals['roc']:.4f}", f"PR-AUC {vals['pr']:.4f}")
+            col_m.metric(nome, f"ROC {vals['roc']:.4f}", delta)
+            col_m.caption(f"PR-AUC {vals['pr']:.4f}")
 
-        # ── Curvas ROC — dinâmicas ────────────────────────────────────────
+        # ── Curvas ROC — reais (conjunto de teste) ───────────────────────
         st.subheader("📉 Curvas ROC — Todos os Modelos")
         _paleta_roc = {
             "GBM Global":     ("#d62728", "-"),
